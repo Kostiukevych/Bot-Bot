@@ -403,7 +403,7 @@ fun HistoryScreen(
                 verticalAlignment = Alignment.CenterVertically
               ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                  Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = null, tint = HudCyan, modifier = Modifier.size(16.dp))
+                  Icon(Icons.Outlined.ShowChart, contentDescription = null, tint = HudCyan, modifier = Modifier.size(16.dp))
                   Spacer(Modifier.width(6.dp))
                   Text("EQUITY CURVE // PnL", color = HudCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 }
@@ -537,7 +537,7 @@ fun HistoryScreen(
               contentAlignment = Alignment.Center
             ) {
               Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.AutoMirrored.Outlined.ReceiptLong, contentDescription = null, tint = HudTextMuted, modifier = Modifier.size(32.dp))
+                Icon(Icons.Outlined.ReceiptLong, contentDescription = null, tint = HudTextMuted, modifier = Modifier.size(32.dp))
                 Spacer(Modifier.height(8.dp))
                 Text("НЕТ СДЕЛОК НА БИРЖЕ // ОЖИДАНИЕ ИСПОЛНЕНИЙ", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 Spacer(Modifier.height(4.dp))

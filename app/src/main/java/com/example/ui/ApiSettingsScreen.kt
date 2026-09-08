@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -162,7 +163,7 @@ fun ApiSettingsScreen(
           HudCard(
             modifier = Modifier.fillMaxWidth(),
             title = "РЕЖИМ ПОДКЛЮЧЕНИЯ (СЕТЬ)",
-            icon = Icons.AutoMirrored.Outlined.AltRoute
+            icon = Icons.Outlined.AltRoute
           ) {
             Row(
               modifier = Modifier.fillMaxWidth(),

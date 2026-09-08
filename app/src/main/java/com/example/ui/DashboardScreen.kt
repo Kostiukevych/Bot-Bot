@@ -866,7 +866,7 @@ fun DashboardScreen(
         item {
           HudCard(
             title = "АКТИВНЫЕ ОРДЕРА (${openOrders.size})",
-            icon = Icons.AutoMirrored.Outlined.ListAlt,
+            icon = Icons.Outlined.ListAlt,
             modifier = Modifier.fillMaxWidth().testTag("open_orders_card")
           ) {
             if (openOrders.isEmpty()) {
@@ -1043,7 +1043,7 @@ fun DashboardTopBar(
         onClick = onOpenHistory,
         modifier = Modifier.size(34.dp).testTag("history_button")
       ) {
-        Icon(Icons.AutoMirrored.Outlined.ReceiptLong, contentDescription = "Trade History", tint = HudCyan)
+        Icon(Icons.Outlined.ReceiptLong, contentDescription = "Trade History", tint = HudCyan)
       }
       Spacer(Modifier.width(4.dp))
       IconButton(
