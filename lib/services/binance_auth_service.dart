@@ -32,14 +32,10 @@ class BinanceAuthService {
     final baseUrl = isTestnet ? testnetBaseUrl : mainnetBaseUrl;
     final uri = Uri.parse('$baseUrl/api/v3/ping');
 
-    try {
-      final response = await _client.get(uri).timeout(
-        const Duration(seconds: 8),
-      );
-      return response.statusCode == 200;
-    } catch (_) {
-      return false;
-    }
+    final response = await _client.get(uri).timeout(
+      const Duration(seconds: 8),
+    );
+    return response.statusCode == 200;
   }
 
   /// Запрос информации об аккаунте: GET /api/v3/account (Signed endpoint)
@@ -109,10 +105,18 @@ class BinanceAuthService {
     bool isTestnet = true,
   }) async {
     // 1. Проверяем ping
-    final pingOk = await ping(isTestnet: isTestnet);
-    if (!pingOk) {
+    try {
+      final pingOk = await ping(isTestnet: isTestnet);
+      if (!pingOk) {
+        return ConnectionCheckResult.error(
+          message: 'Сервер Binance ${isTestnet ? "Testnet" : "Live"} вернул статус ошибки при Ping.',
+          isPingOk: false,
+        );
+      }
+    } catch (e) {
+      final cleanMessage = e.toString().replaceFirst('Exception: ', '');
       return ConnectionCheckResult.error(
-        message: 'Сервер Binance ${isTestnet ? "Testnet" : "Live"} недоступен (Ping failed). Проверьте интернет.',
+        message: 'Ошибка соединения при Ping: $cleanMessage',
         isPingOk: false,
       );
     }

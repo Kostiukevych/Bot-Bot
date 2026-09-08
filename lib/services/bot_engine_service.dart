@@ -368,7 +368,8 @@ class BotEngineService {
             _addLog('✅ СДЕЛКА ИСПОЛНЕНА: $sym x ${trade.quantity} по цене ${trade.entryPrice} USDT');
             _addLog('Установлен SL: ${trade.stopLossPrice.toStringAsFixed(2)} | TP: ${trade.takeProfitPrice.toStringAsFixed(2)}');
           } else {
-            _addLog('Не удалось открыть сделку (проверьте LOT_SIZE или баланс биржи).');
+            final orderErr = _orderService.lastOrderResult?.errorMessage ?? 'Ошибка размещения ордера';
+            _addLog('❌ Не удалось открыть сделку: $orderErr');
           }
         } else {
           _addLog('Ожидание паттерна входа (Score ${signal.score}/${_strategyConfig.minScoreThreshold})');

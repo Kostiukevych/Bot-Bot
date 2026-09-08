@@ -14,6 +14,12 @@ class BinanceWebSocketService {
   final _tickerController = StreamController<TickerData>.broadcast();
   Stream<TickerData> get tickerStream => _tickerController.stream;
 
+  final _errorController = StreamController<String>.broadcast();
+  Stream<String> get errorStream => _errorController.stream;
+
+  String? _lastError;
+  String? get lastError => _lastError;
+
   bool _isConnected = false;
   bool get isConnected => _isConnected;
 
@@ -25,6 +31,7 @@ class BinanceWebSocketService {
     disconnect();
 
     _currentSymbol = lowerSymbol;
+    _lastError = null;
     final wsUrl = '$wsBaseUrl/${lowerSymbol}@ticker';
 
     try {
@@ -40,10 +47,15 @@ class BinanceWebSocketService {
               final ticker = TickerData.fromWs(data);
               _tickerController.add(ticker);
             }
-          } catch (_) {}
+          } catch (parseError) {
+            _lastError = 'Ошибка парсинга WS тикера: $parseError';
+            _errorController.add(_lastError!);
+          }
         },
         onError: (err) {
           _isConnected = false;
+          _lastError = 'Сбой WebSocket ($lowerSymbol@ticker): $err';
+          _errorController.add(_lastError!);
           _scheduleReconnect();
         },
         onDone: () {
@@ -51,8 +63,10 @@ class BinanceWebSocketService {
         },
         cancelOnError: false,
       );
-    } catch (_) {
+    } catch (e) {
       _isConnected = false;
+      _lastError = 'Ошибка подключения к WebSocket: $e';
+      _errorController.add(_lastError!);
       _scheduleReconnect();
     }
   }

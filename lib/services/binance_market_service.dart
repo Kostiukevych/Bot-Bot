@@ -56,6 +56,19 @@ class BinanceMarketService {
     }
   }
 
+  /// Получение 24h данных тикера через GET /api/v3/ticker/24hr
+  Future<TickerData> getTicker24h(String symbol) async {
+    final uri = Uri.parse('$testnetBaseUrl/api/v3/ticker/24hr?symbol=${symbol.toUpperCase().trim()}');
+    final response = await _client.get(uri).timeout(const Duration(seconds: 8));
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      return TickerData.fromJson(data);
+    } else {
+      throw Exception('Ошибка загрузки тикера $symbol: HTTP ${response.statusCode} - ${response.body}');
+    }
+  }
+
   /// Получение открытых ордеров: GET /api/v3/openOrders
   Future<List<OpenOrder>> getOpenOrders({
     required String apiKey,

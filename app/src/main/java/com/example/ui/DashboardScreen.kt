@@ -57,14 +57,16 @@ fun DashboardScreen(
   val scope = rememberCoroutineScope()
   val snackbarHostState = remember { SnackbarHostState() }
 
-  // Баланс
-  var totalUsdt by remember { mutableDoubleStateOf(10000.00) }
-  var freeUsdt by remember { mutableDoubleStateOf(8500.00) }
-  var lockedUsdt by remember { mutableDoubleStateOf(1500.00) }
-  val balanceHistory = remember { mutableStateListOf(9800f, 9950f, 9900f, 10120f, 10050f, 10000f) }
+  // Баланс (честный state без заглушек 10000 USDT)
+  var totalUsdt by remember { mutableStateOf<Double?>(null) }
+  var freeUsdt by remember { mutableStateOf<Double?>(null) }
+  var lockedUsdt by remember { mutableStateOf<Double?>(null) }
+  val balanceHistory = remember { mutableStateListOf<Float>() }
+  var balanceError by remember { mutableStateOf<String?>(null) }
 
   // Пары и тикер
   var pairs by remember { mutableStateOf<List<TradingPair>>(emptyList()) }
+  var pairsError by remember { mutableStateOf<String?>(null) }
   var selectedPair by remember { mutableStateOf<TradingPair?>(null) }
   var tickerData by remember { mutableStateOf<TickerData?>(null) }
   var showPairDialog by remember { mutableStateOf(false) }
@@ -75,7 +77,7 @@ fun DashboardScreen(
   val tradeHistory = remember { mutableStateListOf<TradeRecord>() }
 
   // Размер позиции
-  var positionAmountStr by remember { mutableStateOf("2125.0") }
+  var positionAmountStr by remember { mutableStateOf("50.0") }
   var positionPercent by remember { mutableFloatStateOf(25f) }
 
   // Управление ботом
@@ -85,16 +87,22 @@ fun DashboardScreen(
 
   // Открытые ордера
   var openOrders by remember { mutableStateOf<List<OpenOrder>>(emptyList()) }
+  var ordersError by remember { mutableStateOf<String?>(null) }
 
-  // Инициализация данных
+  // Инициализация данных без скрытых заглушек
   LaunchedEffect(Unit) {
     val creds = storageService.getCredentials()
-    val pList = marketService.getTradingPairs()
-    pairs = pList
-    if (pList.isNotEmpty()) {
-      val defaultPair = pList.firstOrNull { it.symbol == "BTCUSDT" } ?: pList.first()
-      selectedPair = defaultPair
-      wsService.subscribeToTicker(defaultPair.symbol)
+    try {
+      val pList = marketService.getTradingPairs()
+      pairs = pList
+      if (pList.isNotEmpty()) {
+        val defaultPair = pList.firstOrNull { it.symbol == "BTCUSDT" } ?: pList.first()
+        selectedPair = defaultPair
+        wsService.subscribeToTicker(defaultPair.symbol)
+      }
+    } catch (e: Exception) {
+      pairsError = e.message ?: "Сбой загрузки пар"
+      snackbarHostState.showSnackbar("Ошибка загрузки пар: ${e.message}")
     }
 
     if (creds != null && creds.apiKey.isNotEmpty()) {
@@ -105,21 +113,22 @@ fun DashboardScreen(
           freeUsdt = usdt.free
           lockedUsdt = usdt.locked
           totalUsdt = usdt.total
-          balanceHistory.add(totalUsdt.toFloat())
+          balanceHistory.add(usdt.total.toFloat())
+          balanceError = null
         }
-      } catch (_: Exception) {}
+      } catch (e: Exception) {
+        balanceError = e.message ?: "Сбой авторизации API"
+        snackbarHostState.showSnackbar("Ошибка баланса Binance: ${e.message}")
+      }
 
       try {
         val orders = marketService.getOpenOrders(creds.apiKey, creds.secretKey)
         openOrders = orders
-      } catch (_: Exception) {}
-    }
-
-    if (openOrders.isEmpty()) {
-      openOrders = listOf(
-        OpenOrder(1001, "BTCUSDT", "BUY", "LIMIT", 64200.0, 0.02, 0.0, "NEW", System.currentTimeMillis() - 120000),
-        OpenOrder(1002, "ETHUSDT", "SELL", "LIMIT", 3450.0, 0.4, 0.0, "NEW", System.currentTimeMillis() - 360000),
-      )
+        ordersError = null
+      } catch (e: Exception) {
+        ordersError = e.message ?: "Ошибка загрузки ордеров"
+        snackbarHostState.showSnackbar("Ошибка ордеров: ${e.message}")
+      }
     }
   }
 
@@ -282,14 +291,26 @@ fun DashboardScreen(
               verticalAlignment = Alignment.Bottom
             ) {
               Column {
-                Text(
-                  "%.2f USDT".format(totalUsdt),
-                  color = HudPeach,
-                  fontSize = 28.sp,
-                  fontWeight = FontWeight.Bold,
-                  fontFamily = FontFamily.Monospace,
-                  letterSpacing = 1.sp
-                )
+                if (balanceError != null) {
+                  Text(
+                    "ОШИБКА: $balanceError",
+                    color = HudRed,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 0.5.sp
+                  )
+                } else {
+                  val totalText = totalUsdt?.let { "%.2f USDT".format(it) } ?: "ЗАГРУЗКА..."
+                  Text(
+                    totalText,
+                    color = HudPeach,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 1.sp
+                  )
+                }
                 Text("ОБЩИЙ ДЕПОЗИТ", color = HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
               }
               IconButton(
@@ -304,10 +325,12 @@ fun DashboardScreen(
                           freeUsdt = u.free
                           lockedUsdt = u.locked
                           totalUsdt = u.total
-                          balanceHistory.add(totalUsdt.toFloat())
+                          balanceHistory.add(u.total.toFloat())
+                          balanceError = null
                         }
                         snackbarHostState.showSnackbar("Баланс обновлен")
                       } catch (e: Exception) {
+                        balanceError = e.message ?: "Сбой API"
                         snackbarHostState.showSnackbar("Ошибка: ${e.message}")
                       }
                     }
@@ -335,7 +358,8 @@ fun DashboardScreen(
               ) {
                 Column {
                   Text("СВОБОДНО", color = HudGreen, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
-                  Text("%.2f USDT".format(freeUsdt), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                  val freeText = freeUsdt?.let { "%.2f USDT".format(it) } ?: "--.--"
+                  Text(freeText, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
               }
               Box(
@@ -347,7 +371,8 @@ fun DashboardScreen(
               ) {
                 Column {
                   Text("В ОРДЕРАХ", color = Color(0xFFFFB300), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
-                  Text("%.2f USDT".format(lockedUsdt), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                  val lockedText = lockedUsdt?.let { "%.2f USDT".format(it) } ?: "--.--"
+                  Text(lockedText, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
               }
             }
@@ -412,7 +437,7 @@ fun DashboardScreen(
                 Text("ТЕКУЩАЯ ЦЕНА (WS)", color = HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                 val priceStr = tickerData?.lastPrice?.let {
                   if (it < 1.0) "%.4f".format(it) else "%.2f".format(it)
-                } ?: "65240.00"
+                } ?: "--.--"
                 Text(
                   priceStr,
                   color = Color.White,
@@ -644,13 +669,13 @@ fun DashboardScreen(
 
         // 4. КАРТОЧКА РАЗМЕРА ПОЗИЦИИ
         item {
-          val currentPrice = tickerData?.lastPrice ?: 65240.0
+          val currentPrice = tickerData?.lastPrice ?: 0.0
           val enteredAmount = positionAmountStr.toDoubleOrNull() ?: 0.0
           val baseQty = if (currentPrice > 0) enteredAmount / currentPrice else 0.0
           val minNotional = selectedPair?.minNotional ?: 10.0
           val minLot = selectedPair?.minQty ?: 0.00001
           val isBelowMin = enteredAmount > 0 && enteredAmount < minNotional
-          val isExceed = enteredAmount > freeUsdt
+          val isExceed = enteredAmount > (freeUsdt ?: 0.0)
 
           HudCard(
             title = "РАЗМЕР ПОЗИЦИИ",
@@ -667,8 +692,9 @@ fun DashboardScreen(
                 onValueChange = {
                   positionAmountStr = it
                   val parsed = it.toDoubleOrNull() ?: 0.0
-                  if (freeUsdt > 0) {
-                    positionPercent = (parsed / freeUsdt * 100f).toFloat().coerceIn(0f, 100f)
+                  val available = freeUsdt ?: 0.0
+                  if (available > 0) {
+                    positionPercent = (parsed / available * 100f).toFloat().coerceIn(0f, 100f)
                   }
                 },
                 label = { Text("СУММА В USDT", fontSize = 10.sp, fontFamily = FontFamily.Monospace) },
@@ -712,7 +738,8 @@ fun DashboardScreen(
               value = positionPercent,
               onValueChange = {
                 positionPercent = it
-                val calc = (freeUsdt * (it / 100f)).coerceAtLeast(0.0)
+                val available = freeUsdt ?: 0.0
+                val calc = (available * (it / 100f)).coerceAtLeast(0.0)
                 positionAmountStr = "%.2f".format(calc)
               },
               valueRange = 0f..100f,
@@ -735,7 +762,8 @@ fun DashboardScreen(
                     .border(1.dp, if (selected) HudCyan else Color(0x3300D4FF), RoundedCornerShape(4.dp))
                     .clickable {
                       positionPercent = p.toFloat()
-                      positionAmountStr = "%.2f".format(freeUsdt * (p / 100.0))
+                      val available = freeUsdt ?: 0.0
+                      positionAmountStr = "%.2f".format(available * (p / 100.0))
                     }
                     .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {

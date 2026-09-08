@@ -36,13 +36,12 @@ class BinanceMarketService(
       .get()
       .build()
 
-    try {
-      client.newCall(request).execute().use { response ->
-        val body = response.body?.string().orEmpty()
-        if (response.isSuccessful) {
-          val root = JSONObject(body)
-          val symbols = root.optJSONArray("symbols") ?: return@withContext getDefaultPairs()
-          val list = mutableListOf<TradingPair>()
+    client.newCall(request).execute().use { response ->
+      val body = response.body?.string().orEmpty()
+      if (response.isSuccessful) {
+        val root = JSONObject(body)
+        val symbols = root.optJSONArray("symbols") ?: return@withContext emptyList()
+        val list = mutableListOf<TradingPair>()
           for (i in 0 until symbols.length()) {
             val item = symbols.getJSONObject(i)
             val status = item.optString("status")
@@ -82,15 +81,12 @@ class BinanceMarketService(
               )
             }
           }
-          if (list.isNotEmpty()) list else getDefaultPairs()
+          list
         } else {
-          getDefaultPairs()
+          throw java.io.IOException("Ошибка сервера Binance exchangeInfo: HTTP ${response.code} ${response.message}")
         }
       }
-    } catch (_: Exception) {
-      getDefaultPairs()
     }
-  }
 
   suspend fun getOpenOrders(apiKey: String, secretKey: String): List<OpenOrder> = withContext(Dispatchers.IO) {
     if (apiKey.isBlank() || secretKey.isBlank()) return@withContext emptyList()
@@ -198,11 +194,4 @@ class BinanceMarketService(
       emptyList()
     }
   }
-
-  private fun getDefaultPairs(): List<TradingPair> = listOf(
-    TradingPair("BTCUSDT", "BTC", "USDT", "TRADING", 0.00001, 9000.0, 0.00001, 10.0),
-    TradingPair("ETHUSDT", "ETH", "USDT", "TRADING", 0.0001, 9000.0, 0.0001, 10.0),
-    TradingPair("BNBUSDT", "BNB", "USDT", "TRADING", 0.001, 90000.0, 0.001, 10.0),
-    TradingPair("SOLUSDT", "SOL", "USDT", "TRADING", 0.01, 90000.0, 0.01, 10.0),
-  )
 }

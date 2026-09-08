@@ -15,38 +15,84 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
+import com.example.service.SecureStorageService
 import com.example.ui.ApiSettingsScreen
+import com.example.ui.CrashDiagnosticScreen
 import com.example.ui.DashboardScreen
 import com.example.ui.HistoryScreen
+import com.example.ui.NativeCrashInfo
 import com.example.ui.theme.MyApplicationTheme
+import java.io.PrintWriter
+import java.io.StringWriter
 
 class MainActivity : ComponentActivity() {
+
+  companion object {
+    val globalCrashState = androidx.compose.runtime.mutableStateOf<NativeCrashInfo?>(null)
+  }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
+
+    // Перехват всех необработанных исключений на уровне JVM / Android процесса
+    val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+    Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+      val sw = StringWriter()
+      throwable.printStackTrace(PrintWriter(sw))
+      val crashInfo = NativeCrashInfo(
+        threadName = thread.name,
+        exceptionClass = throwable.javaClass.name,
+        message = throwable.message ?: "Без описания",
+        stackTrace = sw.toString()
+      )
+      runOnUiThread {
+        globalCrashState.value = crashInfo
+      }
+    }
+
     setContent {
       MyApplicationTheme(darkTheme = true) {
-        var currentScreen by remember { mutableStateOf("dashboard") }
+        val crashInfo = globalCrashState.value
 
-        when (currentScreen) {
-          "dashboard" -> {
-            DashboardScreen(
-              modifier = Modifier.fillMaxSize(),
-              onOpenSettings = { currentScreen = "settings" },
-              onOpenHistory = { currentScreen = "history" }
-            )
-          }
-          "history" -> {
-            HistoryScreen(
-              modifier = Modifier.fillMaxSize(),
-              onBackToDashboard = { currentScreen = "dashboard" }
-            )
-          }
-          else -> {
-            ApiSettingsScreen(
-              modifier = Modifier.fillMaxSize(),
-              onBackToDashboard = { currentScreen = "dashboard" }
-            )
+        if (crashInfo != null) {
+          CrashDiagnosticScreen(
+            crashInfo = crashInfo,
+            onRestart = {
+              globalCrashState.value = null
+            },
+            onClearStorage = {
+              try {
+                val storage = SecureStorageService(this@MainActivity)
+                storage.clearAllData()
+              } catch (_: Exception) {}
+              globalCrashState.value = null
+            },
+            modifier = Modifier.fillMaxSize()
+          )
+        } else {
+          var currentScreen by remember { mutableStateOf("dashboard") }
+
+          when (currentScreen) {
+            "dashboard" -> {
+              DashboardScreen(
+                modifier = Modifier.fillMaxSize(),
+                onOpenSettings = { currentScreen = "settings" },
+                onOpenHistory = { currentScreen = "history" }
+              )
+            }
+            "history" -> {
+              HistoryScreen(
+                modifier = Modifier.fillMaxSize(),
+                onBackToDashboard = { currentScreen = "dashboard" }
+              )
+            }
+            else -> {
+              ApiSettingsScreen(
+                modifier = Modifier.fillMaxSize(),
+                onBackToDashboard = { currentScreen = "dashboard" }
+              )
+            }
           }
         }
       }

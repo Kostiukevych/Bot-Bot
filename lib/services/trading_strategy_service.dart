@@ -18,7 +18,11 @@ class TradingStrategyService {
   final _signalStreamController = StreamController<SignalData>.broadcast();
   Stream<SignalData> get signalStream => _signalStreamController.stream;
 
+  final _errorStreamController = StreamController<String>.broadcast();
+  Stream<String> get errorStream => _errorStreamController.stream;
+
   Function(SignalData)? onSignal;
+  Function(String)? onError;
 
   TradingStrategyService({
     http.Client? client,
@@ -115,7 +119,11 @@ class TradingStrategyService {
   Future<void> _analyzeSymbol(String symbol) async {
     try {
       await fetchAndAnalyze(symbol: symbol);
-    } catch (_) {}
+    } catch (e) {
+      final msg = 'Ошибка анализа klines ($symbol): $e';
+      _errorStreamController.add(msg);
+      onError?.call(msg);
+    }
   }
 
   /// Расчет технических индикаторов: RSI(14), EMA(9), EMA(21), MACD(12,26,9), Volume Avg(20), BB(20,2)
@@ -334,5 +342,6 @@ class TradingStrategyService {
   void dispose() {
     stop();
     _signalStreamController.close();
+    _errorStreamController.close();
   }
 }

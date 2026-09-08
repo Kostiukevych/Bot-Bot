@@ -45,6 +45,9 @@ class OrderExecutionService {
   final Map<String, TradeRecord> _openPositions = {};
   Map<String, TradeRecord> get openPositions => Map.unmodifiable(_openPositions);
 
+  OrderExecutionResult? _lastOrderResult;
+  OrderExecutionResult? get lastOrderResult => _lastOrderResult;
+
   OrderExecutionService({
     http.Client? client,
     SecureStorageService? storageService,
@@ -83,17 +86,21 @@ class OrderExecutionService {
     // 1. Валидация фильтров биржи перед отправкой
     if (pairInfo != null) {
       if (quantity < pairInfo.minQty) {
-        return OrderExecutionResult(
+        final res = OrderExecutionResult(
           isSuccess: false,
           errorMessage: 'Ошибка LOT_SIZE: Объем ($quantity) меньше минимального (${pairInfo.minQty})',
         );
+        _lastOrderResult = res;
+        return res;
       }
       final estNotional = (price ?? 0.0) > 0 ? (quantity * price!) : 0.0;
       if (price != null && estNotional < pairInfo.minNotional) {
-        return OrderExecutionResult(
+        final res = OrderExecutionResult(
           isSuccess: false,
           errorMessage: 'Ошибка MIN_NOTIONAL: Сумма ($estNotional USDT) меньше ${pairInfo.minNotional} USDT',
         );
+        _lastOrderResult = res;
+        return res;
       }
     }
 
@@ -143,7 +150,7 @@ class OrderExecutionService {
           fillPrice = double.tryParse(fills.first['price']?.toString() ?? '') ?? fillPrice;
         }
 
-        return OrderExecutionResult(
+        final res = OrderExecutionResult(
           isSuccess: true,
           orderId: orderId,
           symbol: symbol,
@@ -151,22 +158,28 @@ class OrderExecutionService {
           executedQty: executedQty,
           price: fillPrice,
         );
+        _lastOrderResult = res;
+        return res;
       } else {
         final int code = body['code'] as int? ?? response.statusCode;
         final String msg = body['msg'] as String? ?? 'Неизвестная ошибка Binance API';
         final humanMsg = _parseBinanceError(code, msg);
 
-        return OrderExecutionResult(
+        final res = OrderExecutionResult(
           isSuccess: false,
           binanceErrorCode: code,
           errorMessage: humanMsg,
         );
+        _lastOrderResult = res;
+        return res;
       }
     } catch (e) {
-      return OrderExecutionResult(
+      final res = OrderExecutionResult(
         isSuccess: false,
         errorMessage: 'Сетевая ошибка при исполнении ордера: $e',
       );
+      _lastOrderResult = res;
+      return res;
     }
   }
 
