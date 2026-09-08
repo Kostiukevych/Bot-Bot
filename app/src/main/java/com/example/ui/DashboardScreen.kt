@@ -455,7 +455,7 @@ fun DashboardScreen(
               ) {
                 val pct = tickerData?.priceChangePercent ?: 2.45
                 Text(
-                  "${if (pct >= 0) "+" else ""}%.2f%%".format(pct),
+                  "${if (pct >= 0) "+" else ""}${"%.2f".format(Locale.US, pct)}%",
                   color = changeColor,
                   fontWeight = FontWeight.Bold,
                   fontSize = 15.sp,
@@ -660,8 +660,8 @@ fun DashboardScreen(
                   .padding(8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween
               ) {
-                Text("SL: %.2f USDT (-${strategyConfig.stopLossPercent}%)".format(sig.recommendedStopLoss), color = HudRed, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                Text("TP: %.2f USDT (+${strategyConfig.takeProfitPercent}%)".format(sig.recommendedTakeProfit), color = HudGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Text("SL: ${"%.2f".format(Locale.US, sig.recommendedStopLoss)} USDT (-${strategyConfig.stopLossPercent}%)", color = HudRed, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Text("TP: ${"%.2f".format(Locale.US, sig.recommendedTakeProfit)} USDT (+${strategyConfig.takeProfitPercent}%)", color = HudGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
               }
             }
           }

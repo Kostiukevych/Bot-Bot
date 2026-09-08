@@ -743,7 +743,7 @@ fun AccountInfoCard(info: BinanceAccountInfo, lastUpdated: Long?) {
       Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text("MAKER FEE", color = HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         Text(
-          "%.2f%%".format(info.makerCommission / 100.0),
+          "${"%.2f".format(Locale.US, info.makerCommission / 100.0)}%",
           color = HudPeach,
           fontWeight = FontWeight.Bold,
           fontSize = 15.sp,
@@ -754,7 +754,7 @@ fun AccountInfoCard(info: BinanceAccountInfo, lastUpdated: Long?) {
       Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text("TAKER FEE", color = HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         Text(
-          "%.2f%%".format(info.takerCommission / 100.0),
+          "${"%.2f".format(Locale.US, info.takerCommission / 100.0)}%",
           color = HudPeach,
           fontWeight = FontWeight.Bold,
           fontSize = 15.sp,

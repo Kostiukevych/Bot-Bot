@@ -322,7 +322,7 @@ fun HistoryScreen(
                     Text("ВИНРЕЙТ", color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
                     Spacer(Modifier.height(2.dp))
                     Text(
-                      String.format(Locale.US, "%.1f%%", winrate),
+                      "${String.format(Locale.US, "%.1f", winrate)}%",
                       color = if (winrate >= 50) HudGreen else HudPeach,
                       fontSize = 18.sp,
                       fontWeight = FontWeight.Bold,
