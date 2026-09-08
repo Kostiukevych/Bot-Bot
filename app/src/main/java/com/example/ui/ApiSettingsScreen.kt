@@ -49,6 +49,7 @@ fun ApiSettingsScreen(
 ) {
   val scope = rememberCoroutineScope()
   val snackbarHostState = remember { SnackbarHostState() }
+  val context = LocalContext.current
 
   var profileName by remember { mutableStateOf("Spot Testnet Master") }
   var apiKey by remember { mutableStateOf("") }
@@ -67,9 +68,11 @@ fun ApiSettingsScreen(
 
   var showResetKeysDialog by remember { mutableStateOf(false) }
   var showResetAllDialog by remember { mutableStateOf(false) }
+  var vibrationEnabled by remember { mutableStateOf(storageService.isVibrationEnabled()) }
 
   // Загрузка сохраненных ключей при запуске
   LaunchedEffect(Unit) {
+    vibrationEnabled = storageService.isVibrationEnabled()
     val saved = storageService.getCredentials()
     if (saved != null) {
       profileName = saved.profileName
@@ -173,14 +176,14 @@ fun ApiSettingsScreen(
               Box(
                 modifier = Modifier
                   .weight(1f)
-                  .background(Color(0x2600D4FF), CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp))
-                  .border(1.5.dp, HudCyan, CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp))
+                  .background(Brush.linearGradient(listOf(HudNeonPink.copy(alpha = 0.2f), HudNeonBlue.copy(alpha = 0.2f))), CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp))
+                  .border(1.5.dp, Brush.linearGradient(listOf(HudNeonPink, HudNeonPurple, HudNeonBlue)), CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp))
                   .padding(vertical = 12.dp, horizontal = 8.dp)
                   .testTag("testnet_button"),
                 contentAlignment = Alignment.Center
               ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                  Icon(Icons.Outlined.Science, contentDescription = null, tint = HudCyan)
+                  Icon(Icons.Outlined.Science, contentDescription = null, tint = HudNeonPink)
                   Spacer(Modifier.height(4.dp))
                   Text(
                     "SPOT TESTNET",
@@ -347,8 +350,8 @@ fun ApiSettingsScreen(
                 .height(48.dp)
                 .testTag("check_connection_button"),
               shape = CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp),
-              border = androidx.compose.foundation.BorderStroke(1.5.dp, HudCyan),
-              colors = ButtonDefaults.outlinedButtonColors(contentColor = HudCyan)
+              border = androidx.compose.foundation.BorderStroke(1.5.dp, HudNeonPurple),
+              colors = ButtonDefaults.outlinedButtonColors(contentColor = HudNeonPurple)
             ) {
               Icon(Icons.Outlined.Radar, contentDescription = null, modifier = Modifier.size(18.dp))
               Spacer(Modifier.width(6.dp))
@@ -377,6 +380,9 @@ fun ApiSettingsScreen(
                     accountInfo = info
                     lastUpdatedTime = System.currentTimeMillis()
                     connectionStatus = ConnectionStatus.Success(info)
+                    (context.applicationContext as? com.example.MyApplication)?.botEngine?.let { engine ->
+                      engine.refreshBalance()
+                    }
                     snackbarHostState.showSnackbar("Ключи проверены и сохранены в Android KeyStore!")
                   } catch (e: Exception) {
                     val msg = e.message ?: "Ошибка валидации ключей"
@@ -393,8 +399,8 @@ fun ApiSettingsScreen(
                 .testTag("save_keys_button"),
               shape = CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp),
               colors = ButtonDefaults.buttonColors(
-                containerColor = HudCyan,
-                contentColor = HudNavyDark
+                containerColor = HudNeonPink,
+                contentColor = Color.White
               )
             ) {
               Icon(Icons.Outlined.Save, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -441,6 +447,51 @@ fun ApiSettingsScreen(
         item {
           if (accountInfo != null) {
             AccountInfoCard(info = accountInfo!!, lastUpdated = lastUpdatedTime)
+          }
+        }
+
+        // Настройки обратной связи (Вибрация при сделках)
+        item {
+          HudCard(
+            modifier = Modifier.fillMaxWidth().testTag("haptic_settings_card"),
+            title = "ТАКТИЛЬНЫЙ ОТКЛИК // HAPTIC FEEDBACK",
+            icon = Icons.Outlined.Vibration
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  "Вибрация при сделках",
+                  color = Color.White,
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 13.sp,
+                  fontFamily = FontFamily.Monospace
+                )
+                Text(
+                  "Двойной тактильный импульс на пике вспышки при Take-Profit и открытии ордеров",
+                  color = HudTextMuted,
+                  fontSize = 11.sp,
+                  fontFamily = FontFamily.Monospace
+                )
+              }
+              Switch(
+                checked = vibrationEnabled,
+                onCheckedChange = {
+                  vibrationEnabled = it
+                  storageService.setVibrationEnabled(it)
+                },
+                colors = SwitchDefaults.colors(
+                  checkedThumbColor = Color.White,
+                  checkedTrackColor = HudNeonPurple,
+                  uncheckedThumbColor = HudTextMuted,
+                  uncheckedTrackColor = Color(0x33FFFFFF)
+                ),
+                modifier = Modifier.testTag("vibration_switch")
+              )
+            }
           }
         }
 
@@ -626,30 +677,22 @@ fun HudCard(
   modifier: Modifier = Modifier,
   title: String,
   icon: androidx.compose.ui.graphics.vector.ImageVector,
-  borderColor: Color = Color(0x4400D4FF),
+  borderColor: Color? = null,
+  customBorderBrush: androidx.compose.ui.graphics.Brush? = null,
+  flashTriggerId: String? = null,
+  flashType: com.example.service.TradeFlashType = com.example.service.TradeFlashType.NONE,
   content: @Composable ColumnScope.() -> Unit
 ) {
-  Column(
-    modifier = modifier
-      .background(Color(0xEE0A182C), CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp))
-      .border(1.2.dp, borderColor, CutCornerShape(topStart = 10.dp, bottomEnd = 10.dp))
-      .padding(16.dp)
-  ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-      Icon(icon, contentDescription = null, tint = HudCyan, modifier = Modifier.size(18.dp))
-      Spacer(Modifier.width(8.dp))
-      Text(
-        title,
-        color = HudCyan,
-        fontFamily = FontFamily.Monospace,
-        fontWeight = FontWeight.Bold,
-        fontSize = 12.sp,
-        letterSpacing = 1.sp
-      )
-    }
-    Spacer(Modifier.height(12.dp))
-    content()
-  }
+  com.example.ui.components.HudCard(
+    modifier = modifier,
+    title = title,
+    icon = icon,
+    borderColor = borderColor,
+    customBorderBrush = customBorderBrush,
+    flashTriggerId = flashTriggerId,
+    flashType = flashType,
+    content = content
+  )
 }
 
 @Composable
@@ -909,10 +952,10 @@ fun HudAlertDialog(
 fun hudTextFieldColors() = OutlinedTextFieldDefaults.colors(
   focusedTextColor = Color.White,
   unfocusedTextColor = Color.White,
-  focusedBorderColor = HudCyan,
-  unfocusedBorderColor = Color(0x4400D4FF),
-  focusedLabelColor = HudCyan,
+  focusedBorderColor = HudNeonPink,
+  unfocusedBorderColor = HudNeonPurple.copy(alpha = 0.5f),
+  focusedLabelColor = HudNeonPink,
   unfocusedLabelColor = HudTextMuted,
-  focusedContainerColor = Color(0xFF071220),
-  unfocusedContainerColor = Color(0xFF071220),
+  focusedContainerColor = Color(0xFF0A0A18),
+  unfocusedContainerColor = Color(0xFF0A0A18),
 )

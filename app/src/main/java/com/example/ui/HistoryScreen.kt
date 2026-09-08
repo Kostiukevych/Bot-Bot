@@ -9,17 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -32,19 +22,8 @@ import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.ReceiptLong
 import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -58,21 +37,16 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.MyApplication
 import com.example.model.TradeRecord
 import com.example.service.BinanceMarketService
 import com.example.service.SecureStorageService
-import com.example.ui.theme.HudCardBg
-import com.example.ui.theme.HudCyan
-import com.example.ui.theme.HudGreen
-import com.example.ui.theme.HudPeach
-import com.example.ui.theme.HudRed
-import com.example.ui.theme.HudTextMuted
+import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.*
 
 @Composable
 fun HistoryScreen(
@@ -83,6 +57,8 @@ fun HistoryScreen(
   val scope = rememberCoroutineScope()
   val storageService = remember { SecureStorageService(context) }
   val marketService = remember { BinanceMarketService() }
+  val app = context.applicationContext as? MyApplication
+  val botEngine = app?.botEngine
 
   var allTrades by remember { mutableStateOf<List<TradeRecord>>(emptyList()) }
   var filteredTrades by remember { mutableStateOf<List<TradeRecord>>(emptyList()) }
@@ -106,10 +82,13 @@ fun HistoryScreen(
     isLoading = true
     try {
       val loaded = withContext(Dispatchers.IO) {
+        val botHistory = botEngine?.stateFlow?.value?.tradeHistory ?: emptyList()
+        val combined = mutableListOf<TradeRecord>()
+        combined.addAll(botHistory)
+
         val creds = storageService.getCredentials()
         if (creds != null && creds.apiKey.isNotBlank() && creds.secretKey.isNotBlank()) {
-          // Запрос реальных исполнений через API
-          val realTrades = mutableListOf<TradeRecord>()
+          // Запрос реальных исполнений через API биржи
           val syms = if (selectedSymbol == "ALL") listOf("BTCUSDT", "ETHUSDT", "BNBUSDT") else listOf(selectedSymbol)
           for (s in syms) {
             try {
@@ -121,34 +100,37 @@ fun HistoryScreen(
                 val time = (m["time"] as? Number)?.toLong() ?: System.currentTimeMillis()
                 val quoteQty = m["quoteQty"]?.toString()?.toDoubleOrNull() ?: (price * qty)
                 val orderId = m["orderId"]?.toString() ?: ""
+                val idStr = "API_${m["id"]}"
 
-                realTrades.add(
-                  TradeRecord(
-                    id = "API_${m["id"]}",
-                    symbol = s,
-                    side = if (isBuyer) "BUY" else "SELL",
-                    entryPrice = price,
-                    quantity = qty,
-                    usdtAmount = quoteQty,
-                    stopLossPrice = if (isBuyer) price * 0.98 else price * 1.02,
-                    takeProfitPrice = if (isBuyer) price * 1.04 else price * 0.96,
-                    score = 75,
-                    entryTime = time,
-                    exitPrice = if (!isBuyer) price else null,
-                    exitTime = if (!isBuyer) time else null,
-                    status = if (isBuyer) "OPEN" else "CLOSED_MANUAL",
-                    exitReason = if (isBuyer) null else "Биржевое исполнение (Order #$orderId)",
-                    realizedPnlUsdt = null,
-                    realizedPnlPercent = null
+                // Добавляем только если нет дубликата
+                if (combined.none { it.id == idStr }) {
+                  combined.add(
+                    TradeRecord(
+                      id = idStr,
+                      symbol = s,
+                      side = if (isBuyer) "BUY" else "SELL",
+                      entryPrice = price,
+                      quantity = qty,
+                      usdtAmount = quoteQty,
+                      stopLossPrice = if (isBuyer) price * 0.98 else price * 1.02,
+                      takeProfitPrice = if (isBuyer) price * 1.04 else price * 0.96,
+                      score = 75,
+                      entryTime = time,
+                      exitPrice = if (!isBuyer) price else null,
+                      exitTime = if (!isBuyer) time else null,
+                      status = if (isBuyer) "OPEN" else "CLOSED_MANUAL",
+                      exitReason = if (isBuyer) null else "Биржевое исполнение (Order #$orderId)",
+                      realizedPnlUsdt = null,
+                      realizedPnlPercent = null
+                    )
                   )
-                )
+                }
               }
             } catch (_: Exception) {}
           }
-          realTrades.sortedByDescending { it.entryTime }
-        } else {
-          emptyList()
         }
+        // Сортировка от новых к старым (Desc by entryTime)
+        combined.sortedByDescending { it.entryTime }
       }
       allTrades = loaded
       applyFilters(loaded, selectedSymbol)
@@ -161,7 +143,7 @@ fun HistoryScreen(
     loadTrades()
   }
 
-  // Расчет сводной статистики
+  // Расчет расширенной сводной статистики
   val closedTrades = filteredTrades.filter { it.status != "OPEN" }
   val winningTrades = closedTrades.count { (it.realizedPnlUsdt ?: 0.0) > 0 }
   val losingTrades = closedTrades.count { (it.realizedPnlUsdt ?: 0.0) < 0 }
@@ -265,9 +247,9 @@ fun HistoryScreen(
                 Toast.makeText(context, "Нет сделок для экспорта", Toast.LENGTH_SHORT).show()
               } else {
                 val sb = StringBuilder()
-                sb.append("ID,Symbol,Side,EntryPrice,ExitPrice,Qty,UsdtAmount,Status,ExitReason\n")
+                sb.append("ID,Symbol,Side,EntryTime,ExitTime,EntryPrice,ExitPrice,Qty,UsdtAmount,Status,RealizedPnlUsdt,RealizedPnlPct,ExitReason\n")
                 filteredTrades.forEach { t ->
-                  sb.append("${t.id},${t.symbol},${t.side},${t.entryPrice},${t.exitPrice ?: ""},${t.quantity},${t.usdtAmount},${t.status},\"${t.exitReason ?: ""}\"\n")
+                  sb.append("${t.id},${t.symbol},${t.side},${t.entryTime},${t.exitTime ?: ""},${t.entryPrice},${t.exitPrice ?: ""},${t.quantity},${t.usdtAmount},${t.status},${t.realizedPnlUsdt ?: ""},${t.realizedPnlPercent ?: ""},\"${t.exitReason ?: ""}\"\n")
                 }
                 csvContent = sb.toString()
                 showCsvDialog = true
@@ -285,7 +267,7 @@ fun HistoryScreen(
           .fillMaxSize()
           .padding(horizontal = 14.dp, vertical = 12.dp)
       ) {
-        // 2. Сводная статистика
+        // 2. Сводная статистика (ЧАСТЬ B п.4)
         item {
           Box(
             modifier = Modifier
@@ -307,7 +289,29 @@ fun HistoryScreen(
                 }
                 Text("ВСЕГО: ${filteredTrades.size}", color = Color.White, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
               }
-              Spacer(Modifier.height(12.dp))
+              Spacer(Modifier.height(8.dp))
+
+              // Текстовая сводка по запросу:
+              // "Всего сделок: N | Прибыльных: X | Убыточных: Y | Винрейт: Z% | Суммарный PnL: ±USDT"
+              val pnlPrefix = if (totalPnlUsdt >= 0) "+" else ""
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .background(Color(0xFF071220), RoundedCornerShape(6.dp))
+                  .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(6.dp))
+                  .padding(8.dp)
+              ) {
+                Text(
+                  "Всего сделок: ${filteredTrades.size} | Прибыльных: $winningTrades | Убыточных: $losingTrades | Винрейт: ${"%.1f".format(Locale.US, winrate)}% | Суммарный PnL: ${pnlPrefix}${"%.2f".format(Locale.US, totalPnlUsdt)} USDT",
+                  color = Color.White,
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Medium,
+                  fontFamily = FontFamily.Monospace,
+                  lineHeight = 16.sp
+                )
+              }
+
+              Spacer(Modifier.height(10.dp))
 
               Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 // Winrate
@@ -449,110 +453,71 @@ fun HistoryScreen(
 
                 drawPath(
                   path = path,
-                  color = if (totalPnlUsdt >= 0) HudGreen else HudRed,
-                  style = Stroke(width = 2.dp.toPx())
+                  color = if (acc >= 0) HudGreen else HudRed,
+                  style = Stroke(width = 3.dp.toPx())
                 )
               }
             }
           }
         }
 
-        // 4. Фильтр пар
+        // 4. Фильтры по символам
         item {
           Spacer(Modifier.height(14.dp))
-          Text(
-            "ФИЛЬТР ПО ПАРЕ",
-            color = HudTextMuted,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace
-          )
-          Spacer(Modifier.height(6.dp))
-
           Row(
             modifier = Modifier
               .fillMaxWidth()
               .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
           ) {
-            symbols.forEach { s ->
-              val isSel = selectedSymbol == s
+            symbols.forEach { sym ->
+              val isSel = (sym == selectedSymbol)
               Box(
                 modifier = Modifier
-                  .background(if (isSel) HudCyan else Color(0xFF0D2340), RoundedCornerShape(6.dp))
-                  .border(1.dp, if (isSel) HudCyan else Color(0x3300D4FF), RoundedCornerShape(6.dp))
+                  .background(if (isSel) HudCyan else Color(0x1A00D4FF), RoundedCornerShape(4.dp))
+                  .border(1.dp, if (isSel) HudCyan else Color(0x3300D4FF), RoundedCornerShape(4.dp))
                   .clickable {
-                    selectedSymbol = s
-                    applyFilters(allTrades, s)
+                    selectedSymbol = sym
+                    applyFilters(allTrades, sym)
                   }
                   .padding(horizontal = 10.dp, vertical = 6.dp)
               ) {
                 Text(
-                  s,
-                  color = if (isSel) Color(0xFF0A1628) else Color.White,
-                  fontSize = 10.sp,
+                  sym,
+                  color = if (isSel) HudNavyDark else Color.White,
                   fontWeight = FontWeight.Bold,
+                  fontSize = 11.sp,
                   fontFamily = FontFamily.Monospace
                 )
               }
             }
           }
+          Spacer(Modifier.height(10.dp))
         }
 
-        // 5. Заголовок списка
-        item {
-          Spacer(Modifier.height(14.dp))
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-          ) {
-            Text(
-              "СПИСОК ОПЕРАЦИЙ (${filteredTrades.size})",
-              color = HudTextMuted,
-              fontSize = 10.sp,
-              fontWeight = FontWeight.Bold,
-              fontFamily = FontFamily.Monospace
-            )
-            Text("СОРТИРОВКА: DESC", color = Color(0xFF536D88), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
-          }
-          Spacer(Modifier.height(8.dp))
-        }
-
-        // Список сделок или Empty state
+        // 5. Список сделок
         if (isLoading) {
           item {
-            Box(modifier = Modifier.fillMaxWidth().height(140.dp), contentAlignment = Alignment.Center) {
-              CircularProgressIndicator(color = HudCyan, strokeWidth = 2.dp)
+            Box(modifier = Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) {
+              CircularProgressIndicator(color = HudCyan)
             }
           }
         } else if (filteredTrades.isEmpty()) {
           item {
-            Box(
-              modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF071220), RoundedCornerShape(8.dp))
-                .border(1.dp, Color(0x2200D4FF), RoundedCornerShape(8.dp))
-                .padding(24.dp),
-              contentAlignment = Alignment.Center
-            ) {
-              Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Outlined.ReceiptLong, contentDescription = null, tint = HudTextMuted, modifier = Modifier.size(32.dp))
-                Spacer(Modifier.height(8.dp))
-                Text("НЕТ СДЕЛОК НА БИРЖЕ // ОЖИДАНИЕ ИСПОЛНЕНИЙ", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                Spacer(Modifier.height(4.dp))
-                Text("Нажмите кнопку синхронизации вверху или активируйте бота на дашборде", color = HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-              }
+            Box(modifier = Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) {
+              Text("Сделок не найдено", color = HudTextMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             }
           }
         } else {
-          items(filteredTrades) { t ->
+          items(filteredTrades, key = { it.id }) { t ->
             val isBuy = t.side.equals("BUY", ignoreCase = true)
             val sideColor = if (isBuy) HudGreen else HudRed
             val isClosed = t.status != "OPEN"
             val pnl = t.realizedPnlUsdt
-            val dateFormat = SimpleDateFormat("dd.MM.yy HH:mm", Locale.US)
-            val dateStr = dateFormat.format(Date(t.entryTime))
+            val pnlPct = t.realizedPnlPercent
+            val dateFormat = SimpleDateFormat("dd.MM.yy HH:mm:ss", Locale.US)
+            val entryTimeStr = dateFormat.format(Date(t.entryTime))
+            val exitTimeStr = t.exitTime?.let { dateFormat.format(Date(it)) }
 
             Box(
               modifier = Modifier
@@ -588,28 +553,37 @@ fun HistoryScreen(
 
                   if (pnl != null) {
                     val pnlColor = if (pnl >= 0) HudGreen else HudRed
+                    val pnlPctStr = pnlPct?.let { " (${if (it >= 0) "+" else ""}${"%.2f".format(Locale.US, it)}%)" } ?: ""
                     Text(
-                      String.format(Locale.US, "%s%.2f $", if (pnl >= 0) "+" else "", pnl),
+                      "${if (pnl >= 0) "+" else ""}${"%.2f".format(Locale.US, pnl)} USDT$pnlPctStr",
                       color = pnlColor,
                       fontSize = 12.sp,
                       fontWeight = FontWeight.Bold,
                       fontFamily = FontFamily.Monospace
                     )
                   } else {
-                    Text(dateStr, color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Text("В РЫНКЕ", color = HudCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                   }
                 }
 
                 Spacer(Modifier.height(6.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                  Text(String.format(Locale.US, "ВХОД: %.2f", t.entryPrice), color = Color(0xFFB0C4DE), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                  Text(if (t.exitPrice != null) String.format(Locale.US, "ВЫХОД: %.2f", t.exitPrice) else "В РЫНКЕ", color = Color(0xFFB0C4DE), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                  Text(String.format(Locale.US, "ОБЪЕМ: %.4f", t.quantity), color = HudPeach, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                  Text("ВХОД: ${"%.2f".format(Locale.US, t.entryPrice)}", color = Color(0xFFB0C4DE), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                  Text(if (t.exitPrice != null) "ВЫХОД: ${"%.2f".format(Locale.US, t.exitPrice!!)}" else "ВЫХОД: --", color = Color(0xFFB0C4DE), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                  Text("ОБЪЕМ: ${"%.4f".format(Locale.US, t.quantity)}", color = HudPeach, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                }
+
+                Spacer(Modifier.height(4.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                  Text("Время входа: $entryTimeStr", color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                  if (exitTimeStr != null) {
+                    Text("Выход: $exitTimeStr", color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                  }
                 }
 
                 if (t.exitReason != null) {
                   Spacer(Modifier.height(4.dp))
-                  Text(t.exitReason!!, color = Color(0xFF536D88), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                  Text("Причина: ${t.exitReason}", color = Color(0xFF536D88), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
                 }
               }
             }
@@ -641,7 +615,12 @@ fun HistoryScreen(
                 .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(6.dp))
                 .padding(8.dp)
             ) {
-              Text(csvContent, color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+              Text(
+                csvContent.take(500) + if (csvContent.length > 500) "\n..." else "",
+                color = HudPeach,
+                fontSize = 9.sp,
+                fontFamily = FontFamily.Monospace
+              )
             }
           }
         },
@@ -649,21 +628,20 @@ fun HistoryScreen(
           TextButton(
             onClick = {
               val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-              val clip = ClipData.newPlainText("Trades CSV", csvContent)
+              val clip = ClipData.newPlainText("Trade History CSV", csvContent)
               clipboard.setPrimaryClip(clip)
+              Toast.makeText(context, "CSV скопирован в буфер обмена", Toast.LENGTH_SHORT).show()
               showCsvDialog = false
-              Toast.makeText(context, "CSV скопирован в буфер обмена!", Toast.LENGTH_SHORT).show()
             }
           ) {
-            Text("СКОПИРОВАТЬ", color = HudCyan, fontFamily = FontFamily.Monospace)
+            Text("КОПИРОВАТЬ", color = HudCyan, fontFamily = FontFamily.Monospace)
           }
         },
         dismissButton = {
           TextButton(onClick = { showCsvDialog = false }) {
-            Text("ЗАКРЫТЬ", color = HudTextMuted, fontFamily = FontFamily.Monospace)
+            Text("ОТМЕНА", color = HudTextMuted, fontFamily = FontFamily.Monospace)
           }
-        },
-        containerColor = Color(0xFF0A182C)
+        }
       )
     }
   }
