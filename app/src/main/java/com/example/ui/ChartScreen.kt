@@ -1,6 +1,8 @@
 package com.example.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -10,8 +12,10 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -37,7 +41,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.MyApplication
 import com.example.model.Candle
+import com.example.model.GridBotState
 import com.example.model.TradingPair
+import com.example.ui.components.GridBotConfigPanel
+import com.example.ui.components.GridOverlayRenderer
 import com.example.ui.components.HudCard
 import com.example.ui.theme.*
 import kotlinx.coroutines.launch
@@ -82,6 +89,22 @@ fun ChartScreen(
 
   // Подписка на тикер (текущая цена, 24h change %, 24h High, 24h Low)
   val tickerData by wsService.tickerFlow.collectAsState()
+
+  val gridBotEngine = app.gridBotEngine
+  val gridState by gridBotEngine.stateFlow.collectAsState()
+  var isGridBotMode by remember { mutableStateOf(false) }
+
+  // Синхронизация символа с GridBotEngine
+  LaunchedEffect(selectedSymbol) {
+    gridBotEngine.updateConfig(gridBotEngine.stateFlow.value.config.copy(symbol = selectedSymbol))
+  }
+
+  // Если сетка активна, автоматически переключаемся в режим Grid Bot
+  LaunchedEffect(gridState.isActive) {
+    if (gridState.isActive) {
+      isGridBotMode = true
+    }
+  }
 
   // При старте экрана или смене пары подписываем тикер
   LaunchedEffect(selectedSymbol) {
@@ -202,10 +225,18 @@ fun ChartScreen(
           onBack = onBackToDashboard
         )
 
+        val chartScrollState = rememberScrollState()
         Column(
-          modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 14.dp, vertical = 8.dp)
+          modifier = if (isGridBotMode) {
+            Modifier
+              .fillMaxSize()
+              .verticalScroll(chartScrollState)
+              .padding(horizontal = 14.dp, vertical = 8.dp)
+          } else {
+            Modifier
+              .fillMaxSize()
+              .padding(horizontal = 14.dp, vertical = 8.dp)
+          }
         ) {
           // 1. СЕЛЕКТОР ПАРЫ + ТЕКУЩАЯ ЦЕНА
           val currentPrice = tickerData?.lastPrice ?: 0.0
@@ -214,6 +245,16 @@ fun ChartScreen(
           val changeColor = if (isPositive) HudGreen else HudRed
           val high24h = tickerData?.highPrice ?: 0.0
           val low24h = tickerData?.lowPrice ?: 0.0
+
+          // Инициализация границ сетки при первом получении цены
+          LaunchedEffect(currentPrice) {
+            if (!gridState.isActive && currentPrice > 0.0) {
+              if (gridState.config.lowerBound == 0.0 || gridState.config.upperBound == 0.0) {
+                val bounds = gridBotEngine.calculateBoundsFromPercent(gridState.config.rangePercent, currentPrice)
+                gridBotEngine.updateConfig(gridState.config.copy(lowerBound = bounds.first, upperBound = bounds.second))
+              }
+            }
+          }
 
           HudCard(
             title = "ИНСТРУМЕНТ // РЫНОЧНЫЙ ТИКЕР",
@@ -322,7 +363,69 @@ fun ChartScreen(
             }
           }
 
-          Spacer(Modifier.height(10.dp))
+          Spacer(Modifier.height(8.dp))
+
+          // ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА: СВЕЧНОЙ ГРАФИК vs GRID BOT (СЕТОЧНАЯ ТОРГОВЛЯ)
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .background(Color(0xFF05101E), RoundedCornerShape(8.dp))
+              .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(8.dp))
+              .padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+          ) {
+            val chartTabBg = if (!isGridBotMode) Brush.linearGradient(listOf(HudNeonBlue, Color(0xFF00527A))) else Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
+            Box(
+              modifier = Modifier
+                .weight(1f)
+                .background(chartTabBg, RoundedCornerShape(6.dp))
+                .clickable { isGridBotMode = false }
+                .padding(vertical = 7.dp)
+                .testTag("tab_standard_chart"),
+              contentAlignment = Alignment.Center
+            ) {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.CandlestickChart, contentDescription = null, tint = if (!isGridBotMode) Color.White else HudTextMuted, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                  "СВЕЧНОЙ ГРАФИК",
+                  color = if (!isGridBotMode) Color.White else HudTextMuted,
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 11.sp,
+                  fontFamily = FontFamily.Monospace
+                )
+              }
+            }
+
+            val gridTabBg = if (isGridBotMode) {
+              if (gridState.isActive) Brush.linearGradient(listOf(HudGreen, Color(0xFF005A32))) else Brush.linearGradient(listOf(HudNeonPink, HudNeonPurple))
+            } else {
+              Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
+            }
+            Box(
+              modifier = Modifier
+                .weight(1f)
+                .background(gridTabBg, RoundedCornerShape(6.dp))
+                .clickable { isGridBotMode = true }
+                .padding(vertical = 7.dp)
+                .testTag("tab_grid_bot"),
+              contentAlignment = Alignment.Center
+            ) {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.GridOn, contentDescription = null, tint = if (isGridBotMode) Color.White else HudTextMuted, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                  if (gridState.isActive) "GRID BOT [ON]" else "GRID BOT (СЕТКА)",
+                  color = if (isGridBotMode) Color.White else HudTextMuted,
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 11.sp,
+                  fontFamily = FontFamily.Monospace
+                )
+              }
+            }
+          }
+
+          Spacer(Modifier.height(8.dp))
 
           // 2. ПЕРЕКЛЮЧАТЕЛЬ ТАЙМФРЕЙМА (1m / 5m / 15m / 1h / 4h / 1d)
           Row(
@@ -373,13 +476,21 @@ fun ChartScreen(
           Spacer(Modifier.height(10.dp))
 
           // 3. ОБЛАСТЬ ГРАФИКА СВЕЧЕЙ (CANVAS)
-          Box(
-            modifier = Modifier
+          val chartBoxModifier = if (isGridBotMode) {
+            Modifier
+              .fillMaxWidth()
+              .height(300.dp)
+              .background(Color(0xFF071220), CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp))
+              .border(1.2.dp, HudNeonBlue.copy(alpha = 0.5f), CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp))
+          } else {
+            Modifier
               .fillMaxWidth()
               .weight(1f)
               .background(Color(0xFF071220), CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp))
               .border(1.2.dp, HudNeonBlue.copy(alpha = 0.5f), CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp))
-          ) {
+          }
+
+          Box(modifier = chartBoxModifier) {
             when {
               isLoadingCandles -> {
                 Column(
@@ -445,10 +556,30 @@ fun ChartScreen(
                   candles = candles,
                   currentPrice = currentPrice,
                   interval = selectedInterval,
+                  gridState = if (isGridBotMode) gridState else null,
+                  onDragUpperBound = { newUpper ->
+                    val cleanUpper = if (newUpper >= 1.0) Math.round(newUpper * 100.0) / 100.0 else Math.round(newUpper * 10000.0) / 10000.0
+                    gridBotEngine.updateConfig(gridState.config.copy(upperBound = cleanUpper))
+                  },
+                  onDragLowerBound = { newLower ->
+                    val cleanLower = if (newLower >= 1.0) Math.round(newLower * 100.0) / 100.0 else Math.round(newLower * 10000.0) / 10000.0
+                    gridBotEngine.updateConfig(gridState.config.copy(lowerBound = cleanLower))
+                  },
                   modifier = Modifier.fillMaxSize()
                 )
               }
             }
+          }
+
+          // 4. ПАНЕЛЬ НАСТРОЙКИ И УПРАВЛЕНИЯ GRID BOT
+          if (isGridBotMode) {
+            Spacer(Modifier.height(14.dp))
+            GridBotConfigPanel(
+              gridBotEngine = gridBotEngine,
+              currentPrice = currentPrice,
+              selectedSymbol = selectedSymbol
+            )
+            Spacer(Modifier.height(24.dp))
           }
         }
       }
@@ -562,9 +693,23 @@ fun CandlestickChart(
   candles: List<Candle>,
   currentPrice: Double,
   interval: String,
+  gridState: GridBotState? = null,
+  onDragUpperBound: ((Double) -> Unit)? = null,
+  onDragLowerBound: ((Double) -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
   val density = LocalDensity.current
+
+  val flashAlpha by animateFloatAsState(
+    targetValue = if (System.currentTimeMillis() - (gridState?.lastFlashTrigger ?: 0L) < 1500L) 1f else 0f,
+    animationSpec = tween(1000),
+    label = "grid_flash_alpha"
+  )
+
+  var activeDragBound by remember { mutableStateOf<String?>(null) }
+  var currentDisplayMin by remember { mutableDoubleStateOf(0.0) }
+  var currentDisplayRange by remember { mutableDoubleStateOf(1.0) }
+  var currentChartHeight by remember { mutableFloatStateOf(1f) }
 
   // Настройки отображения
   val candleWidthPx = with(density) { 9.dp.toPx() }
@@ -649,23 +794,54 @@ fun CandlestickChart(
       modifier = Modifier
         .fillMaxWidth()
         .weight(1f)
-        .pointerInput(candles.size) {
+        .pointerInput(candles.size, gridState?.config) {
           detectDragGestures(
             onDragStart = { offset ->
               touchPoint = offset
+              if (gridState != null && currentDisplayRange > 0.0) {
+                val cfg = gridState.config
+                if (cfg.upperBound > 0.0 && cfg.lowerBound > 0.0) {
+                  val upNorm = (cfg.upperBound - currentDisplayMin) / currentDisplayRange
+                  val upY = (currentChartHeight - upNorm * currentChartHeight).toFloat()
+
+                  val lowNorm = (cfg.lowerBound - currentDisplayMin) / currentDisplayRange
+                  val lowY = (currentChartHeight - lowNorm * currentChartHeight).toFloat()
+
+                  val threshold = 36.dp.toPx()
+                  if (abs(offset.y - upY) < threshold) {
+                    activeDragBound = "UPPER"
+                  } else if (abs(offset.y - lowY) < threshold) {
+                    activeDragBound = "LOWER"
+                  } else {
+                    activeDragBound = null
+                  }
+                }
+              }
             },
             onDragEnd = {
               touchPoint = null
               touchedCandle = null
+              activeDragBound = null
             },
             onDragCancel = {
               touchPoint = null
               touchedCandle = null
+              activeDragBound = null
             },
             onDrag = { change, dragAmount ->
               change.consume()
-              scrollOffset += dragAmount.x
               touchPoint = change.position
+              if (activeDragBound == "UPPER") {
+                val norm = (1f - (change.position.y / currentChartHeight)).coerceIn(0f, 1f)
+                val newPrice = currentDisplayMin + norm * currentDisplayRange
+                onDragUpperBound?.invoke(newPrice)
+              } else if (activeDragBound == "LOWER") {
+                val norm = (1f - (change.position.y / currentChartHeight)).coerceIn(0f, 1f)
+                val newPrice = currentDisplayMin + norm * currentDisplayRange
+                onDragLowerBound?.invoke(newPrice)
+              } else {
+                scrollOffset += dragAmount.x
+              }
             }
           )
         }
@@ -714,6 +890,10 @@ fun CandlestickChart(
         val displayMin = visibleMin - pad
         val displayMax = visibleMax + pad
         val displayRange = displayMax - displayMin
+
+        currentDisplayMin = displayMin
+        currentDisplayRange = displayRange
+        currentChartHeight = chartHeight
 
         fun priceToY(p: Double): Float {
           if (displayRange <= 0.0) return chartHeight / 2f
@@ -878,6 +1058,23 @@ fun CandlestickChart(
               touchedCandle = candles[targetIdx]
             }
           }
+        }
+
+        // 6. Отрисовка уровней сетки Grid Bot, маркеров границ и линии peakPrice
+        if (gridState != null) {
+          GridOverlayRenderer.drawGridOverlay(
+            drawScope = this,
+            gridState = gridState,
+            chartWidth = chartWidth,
+            chartHeight = chartHeight,
+            priceScaleWidthPx = priceScaleWidthPx,
+            displayMin = displayMin,
+            displayMax = displayMax,
+            priceToY = ::priceToY,
+            gridPaint = pricePaint,
+            badgePaint = curPriceBadgePaint,
+            flashAlpha = flashAlpha
+          )
         }
       }
     }

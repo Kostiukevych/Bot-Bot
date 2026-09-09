@@ -154,6 +154,34 @@ class BinanceMarketService(
     }
   }
 
+  suspend fun getOrderStatus(apiKey: String, secretKey: String, symbol: String, orderId: Long): String? = withContext(Dispatchers.IO) {
+    if (apiKey.isBlank() || secretKey.isBlank()) return@withContext null
+    val timestamp = System.currentTimeMillis()
+    val queryString = "symbol=${symbol.uppercase().trim()}&orderId=$orderId&timestamp=$timestamp&recvWindow=5000"
+    val signature = hmacSha256(queryString, secretKey.trim())
+    val fullUrl = "$TESTNET_BASE_URL/api/v3/order?$queryString&signature=$signature"
+
+    val request = Request.Builder()
+      .url(fullUrl)
+      .header("X-MBX-APIKEY", apiKey.trim())
+      .header("Accept", "application/json")
+      .get()
+      .build()
+
+    try {
+      client.newCall(request).execute().use { response ->
+        if (response.isSuccessful) {
+          val obj = JSONObject(response.body?.string().orEmpty())
+          obj.optString("status")
+        } else {
+          null
+        }
+      }
+    } catch (_: Exception) {
+      null
+    }
+  }
+
   suspend fun getMyTrades(apiKey: String, secretKey: String, symbol: String, limit: Int = 50): List<Map<String, Any>> = withContext(Dispatchers.IO) {
     if (apiKey.isBlank() || secretKey.isBlank()) return@withContext emptyList()
     val timestamp = System.currentTimeMillis()

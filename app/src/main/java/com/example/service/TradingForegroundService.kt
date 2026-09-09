@@ -45,41 +45,60 @@ class TradingForegroundService : Service() {
         }
 
         val botEngine = (application as MyApplication).botEngine
+        val gridBotEngine = (application as MyApplication).gridBotEngine
         botEngine.start()
 
-        observeBotState(botEngine)
+        observeBotStates(botEngine, gridBotEngine)
 
         return START_STICKY
     }
 
-    private fun observeBotState(botEngine: TradingBotEngine) {
+    private fun observeBotStates(botEngine: TradingBotEngine, gridBotEngine: GridBotEngine) {
         stateObservationJob?.cancel()
         stateObservationJob = serviceScope.launch {
-            botEngine.stateFlow.collect { state ->
-                val notificationManager = getSystemService(NotificationManager::class.java) ?: return@collect
-                val pairStr = state.selectedPair?.symbol ?: "BTCUSDT"
-                val activePos = state.openPositions[pairStr]
-
-                val title: String
-                val body: String
-
-                if (activePos != null) {
-                    val curPrice = state.tickerData?.lastPrice ?: activePos.entryPrice
-                    val pnlPct = ((curPrice - activePos.entryPrice) / activePos.entryPrice) * 100.0
-                    val sign = if (pnlPct >= 0) "+" else ""
-                    val pnlFormatted = "${sign}${"%.2f".format(Locale.US, pnlPct)}%"
-                    val score = state.currentSignal?.score ?: activePos.score
-                    title = "🟢 LONG $pairStr | PnL: $pnlFormatted"
-                    body = "Вход: ${"%.2f".format(Locale.US, activePos.entryPrice)} | Тек: ${"%.2f".format(Locale.US, curPrice)} | Score: $score%"
-                } else {
-                    val score = state.currentSignal?.score ?: 0
-                    val threshold = state.strategyConfig.minScoreThreshold
-                    title = "⚡ Binance Testnet Bot: $pairStr"
-                    body = "Поиск сигнала: Score $score% (Порог $threshold%) | Статус: ${state.botStatus.title}"
+            launch {
+                gridBotEngine.stateFlow.collect { gridState ->
+                    if (gridState.isActive) {
+                        val notificationManager = getSystemService(NotificationManager::class.java) ?: return@collect
+                        val symbol = gridState.config.symbol
+                        val dir = gridState.config.direction.name
+                        val title = "🌐 GRID BOT: $symbol ($dir) | Ордеров: ${gridState.activeOrderCount}"
+                        val body = "Пик: ${"%.2f".format(Locale.US, gridState.peakPrice)} | Сетка: ${gridState.levels.size} ур. | Профит: +${"%.2f".format(Locale.US, gridState.totalProfitUsdt)} USDT"
+                        val notification = buildNotification(title, body)
+                        notificationManager.notify(NOTIFICATION_ID, notification)
+                    }
                 }
+            }
 
-                val notification = buildNotification(title, body)
-                notificationManager.notify(NOTIFICATION_ID, notification)
+            launch {
+                botEngine.stateFlow.collect { state ->
+                    if (!(application as MyApplication).gridBotEngine.stateFlow.value.isActive) {
+                        val notificationManager = getSystemService(NotificationManager::class.java) ?: return@collect
+                        val pairStr = state.selectedPair?.symbol ?: "BTCUSDT"
+                        val activePos = state.openPositions[pairStr]
+
+                        val title: String
+                        val body: String
+
+                        if (activePos != null) {
+                            val curPrice = state.tickerData?.lastPrice ?: activePos.entryPrice
+                            val pnlPct = ((curPrice - activePos.entryPrice) / activePos.entryPrice) * 100.0
+                            val sign = if (pnlPct >= 0) "+" else ""
+                            val pnlFormatted = "${sign}${"%.2f".format(Locale.US, pnlPct)}%"
+                            val score = state.currentSignal?.score ?: activePos.score
+                            title = "🟢 LONG $pairStr | PnL: $pnlFormatted"
+                            body = "Вход: ${"%.2f".format(Locale.US, activePos.entryPrice)} | Тек: ${"%.2f".format(Locale.US, curPrice)} | Score: $score%"
+                        } else {
+                            val score = state.currentSignal?.score ?: 0
+                            val threshold = state.strategyConfig.minScoreThreshold
+                            title = "⚡ Binance Testnet Bot: $pairStr"
+                            body = "Поиск сигнала: Score $score% (Порог $threshold%) | Статус: ${state.botStatus.title}"
+                        }
+
+                        val notification = buildNotification(title, body)
+                        notificationManager.notify(NOTIFICATION_ID, notification)
+                    }
+                }
             }
         }
     }
