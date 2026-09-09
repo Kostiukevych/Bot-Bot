@@ -1,5 +1,6 @@
 package com.example.service
 
+import com.example.model.Candle
 import com.example.model.OpenOrder
 import com.example.model.TradingPair
 import kotlinx.coroutines.Dispatchers
@@ -184,6 +185,42 @@ class BinanceMarketService(
             map["time"] = item.optLong("time")
             map["isBuyer"] = item.optBoolean("isBuyer")
             list.add(map)
+          }
+          list
+        } else {
+          emptyList()
+        }
+      }
+    } catch (_: Exception) {
+      emptyList()
+    }
+  }
+
+  suspend fun fetchCandles(symbol: String, interval: String, limit: Int = 150): List<Candle> = withContext(Dispatchers.IO) {
+    val cleanSymbol = symbol.uppercase().trim()
+    val cleanInterval = interval.trim()
+    val url = "$TESTNET_BASE_URL/api/v3/klines?symbol=$cleanSymbol&interval=$cleanInterval&limit=$limit"
+    val req = Request.Builder().url(url).get().build()
+    try {
+      client.newCall(req).execute().use { res ->
+        val body = res.body?.string().orEmpty()
+        if (res.isSuccessful) {
+          val array = org.json.JSONArray(body)
+          val list = mutableListOf<Candle>()
+          for (i in 0 until array.length()) {
+            val k = array.getJSONArray(i)
+            list.add(
+              Candle(
+                openTime = k.getLong(0),
+                open = k.getString(1).toDoubleOrNull() ?: 0.0,
+                high = k.getString(2).toDoubleOrNull() ?: 0.0,
+                low = k.getString(3).toDoubleOrNull() ?: 0.0,
+                close = k.getString(4).toDoubleOrNull() ?: 0.0,
+                volume = k.getString(5).toDoubleOrNull() ?: 0.0,
+                closeTime = k.optLong(6, 0L),
+                isClosed = true
+              )
+            )
           }
           list
         } else {

@@ -43,3 +43,23 @@ enum class BotStatus(val title: String, val colorHex: Long) {
   LONG("Позиция открыта LONG", 0xFF00E676),
   SHORT("Позиция открыта SHORT", 0xFFFF8A65)
 }
+
+data class Candle(
+  val openTime: Long,
+  val open: Double,
+  val high: Double,
+  val low: Double,
+  val close: Double,
+  val volume: Double,
+  val closeTime: Long = 0L,
+  val isClosed: Boolean = false
+) {
+  val isBullish: Boolean get() = close >= open
+}
+
+data class KlineUpdate(
+  val symbol: String,
+  val interval: String,
+  val candle: Candle,
+  val isClosed: Boolean
+)

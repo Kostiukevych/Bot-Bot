@@ -24,6 +24,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.content.ContextCompat
 import com.example.service.SecureStorageService
 import com.example.ui.ApiSettingsScreen
+import com.example.ui.ChartScreen
 import com.example.ui.CrashDiagnosticScreen
 import com.example.ui.DashboardScreen
 import com.example.ui.HistoryScreen
@@ -94,7 +95,14 @@ class MainActivity : ComponentActivity() {
               DashboardScreen(
                 modifier = Modifier.fillMaxSize(),
                 onOpenSettings = { currentScreen = "settings" },
-                onOpenHistory = { currentScreen = "history" }
+                onOpenHistory = { currentScreen = "history" },
+                onOpenChart = { currentScreen = "chart" }
+              )
+            }
+            "chart" -> {
+              ChartScreen(
+                modifier = Modifier.fillMaxSize(),
+                onBackToDashboard = { currentScreen = "dashboard" }
               )
             }
             "history" -> {

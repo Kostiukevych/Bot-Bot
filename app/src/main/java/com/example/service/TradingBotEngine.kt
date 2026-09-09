@@ -28,6 +28,20 @@ enum class LogType {
   LOSS
 }
 
+enum class TradeFlashType {
+  NONE,
+  OPEN_POSITION,
+  PROFIT,
+  LOSS
+}
+
+data class TradeFlashEvent(
+  val id: String = UUID.randomUUID().toString(),
+  val type: TradeFlashType = TradeFlashType.NONE,
+  val message: String = "",
+  val timestamp: Long = System.currentTimeMillis()
+)
+
 data class BotEngineState(
   val isBotActive: Boolean = false,
   val botStatus: BotStatus = BotStatus.STOPPED,
@@ -50,7 +64,8 @@ data class BotEngineState(
   ),
   val positionAmountUsdt: Double = 50.0,
   val positionPercent: Float = 25f,
-  val lastError: String? = null
+  val lastError: String? = null,
+  val lastSuccessEvent: TradeFlashEvent? = null
 )
 
 class TradingBotEngine(private val context: Context) {
@@ -265,6 +280,16 @@ class TradingBotEngine(private val context: Context) {
           "✅ Сделка открыта: BUY $sym ${"%.5f".format(Locale.US, fillQty)} по ${"%.2f".format(Locale.US, fillPrice)}",
           LogType.ORDER_SUCCESS
         )
+        // Триггер анимации вспышки рамки при успешном открытии сделки
+        _stateFlow.update {
+          it.copy(
+            lastSuccessEvent = TradeFlashEvent(
+              id = rec.id,
+              type = TradeFlashType.OPEN_POSITION,
+              message = "BUY $sym"
+            )
+          )
+        }
         refreshBalance()
       } else {
         addLog("❌ Ошибка ордера: ${res.errorMessage}", LogType.ORDER_ERROR)
@@ -321,6 +346,8 @@ class TradingBotEngine(private val context: Context) {
     val pnlPctStr = "${pnlSign}${"%.2f".format(Locale.US, profitPct)}%"
     val pnlUsdtStr = "${pnlSign}${"%.2f".format(Locale.US, profitUsdt)} USDT"
 
+    val flashType = if (isProfit) TradeFlashType.PROFIT else TradeFlashType.LOSS
+
     if (isProfit) {
       addLog("✅ $reason: закрыто с прибылью $pnlPctStr ($pnlUsdtStr)", LogType.PROFIT)
     } else {
@@ -330,7 +357,12 @@ class TradingBotEngine(private val context: Context) {
     _stateFlow.update {
       it.copy(
         sessionRealizedPnlUsdt = it.sessionRealizedPnlUsdt + profitUsdt,
-        botStatus = BotStatus.ANALYSIS
+        botStatus = BotStatus.ANALYSIS,
+        lastSuccessEvent = TradeFlashEvent(
+          id = "${pos.id}_closed_${System.currentTimeMillis()}",
+          type = flashType,
+          message = "$reason ($pnlPctStr)"
+        )
       )
     }
     refreshBalance()

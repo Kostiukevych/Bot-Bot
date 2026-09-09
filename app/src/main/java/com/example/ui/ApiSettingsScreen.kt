@@ -34,6 +34,8 @@ import com.example.model.BinanceAccountInfo
 import com.example.model.ConnectionStatus
 import com.example.service.BinanceAuthService
 import com.example.service.SecureStorageService
+import com.example.service.TradeFlashType
+import com.example.ui.components.HudCard as NeonHudCard
 import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -680,10 +682,10 @@ fun HudCard(
   borderColor: Color? = null,
   customBorderBrush: androidx.compose.ui.graphics.Brush? = null,
   flashTriggerId: String? = null,
-  flashType: com.example.service.TradeFlashType = com.example.service.TradeFlashType.NONE,
+  flashType: TradeFlashType = TradeFlashType.NONE,
   content: @Composable ColumnScope.() -> Unit
 ) {
-  com.example.ui.components.HudCard(
+  NeonHudCard(
     modifier = modifier,
     title = title,
     icon = icon,

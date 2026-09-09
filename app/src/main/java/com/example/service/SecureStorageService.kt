@@ -29,6 +29,7 @@ class SecureStorageService(context: Context) {
     private const val PREF_SECRET_KEY_ENC = "pref_secret_key_enc"
     private const val PREF_SECRET_KEY_IV = "pref_secret_key_iv"
     private const val PREF_IS_TESTNET = "pref_is_testnet"
+    private const val PREF_VIBRATION_ENABLED = "pref_vibration_enabled"
   }
 
   init {
@@ -131,5 +132,13 @@ class SecureStorageService(context: Context) {
 
   fun clearAllData() {
     prefs.edit().clear().apply()
+  }
+
+  fun isVibrationEnabled(): Boolean {
+    return prefs.getBoolean(PREF_VIBRATION_ENABLED, true)
+  }
+
+  fun setVibrationEnabled(enabled: Boolean) {
+    prefs.edit().putBoolean(PREF_VIBRATION_ENABLED, enabled).apply()
   }
 }

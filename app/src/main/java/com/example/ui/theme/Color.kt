@@ -20,4 +20,7 @@ val HudGreen = Color(0xFF00E676)
 val HudRed = Color(0xFFFF5252)
 val HudTextMuted = Color(0xFF7E9BB8)
 val HudCardBg = Color(0xF20A182C)
+val HudNeonPink = Color(0xFFFF2A85)
+val HudNeonPurple = Color(0xFF9D00FF)
+val HudNeonBlue = Color(0xFF00E5FF)
 

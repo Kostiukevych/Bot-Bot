@@ -5,6 +5,9 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
@@ -52,6 +55,7 @@ fun DashboardScreen(
   modifier: Modifier = Modifier,
   onOpenSettings: () -> Unit = {},
   onOpenHistory: () -> Unit = {},
+  onOpenChart: () -> Unit = {},
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
@@ -105,8 +109,43 @@ fun DashboardScreen(
     }
   }
 
+  // Тактильная отдача (вибрация) при сделках (если включена пользователем)
+  val flashEvent = botState.lastSuccessEvent
+  LaunchedEffect(flashEvent?.id) {
+    if (flashEvent != null && flashEvent.type != TradeFlashType.NONE) {
+      if (botEngine.storageService.isVibrationEnabled()) {
+        try {
+          val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+            vibratorManager?.defaultVibrator
+          } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+          }
+          if (vibrator != null && vibrator.hasVibrator()) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+              // Двойной тактильный импульс: 70мс вибро, 60мс пауза, 120мс вибро
+              val timings = longArrayOf(0, 70, 60, 120)
+              val amplitudes = intArrayOf(0, 200, 0, 255)
+              vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
+            } else {
+              @Suppress("DEPRECATION")
+              vibrator.vibrate(longArrayOf(0, 70, 60, 120), -1)
+            }
+          }
+        } catch (_: Exception) {}
+      }
+    }
+  }
+
   val backgroundBrush = remember {
-    Brush.verticalGradient(listOf(HudNavyDark, HudNavySurface, Color(0xFF071220)))
+    Brush.verticalGradient(
+      listOf(
+        HudNavyDark,
+        Color(0xFF0C0C1E),
+        Color(0xFF060610)
+      )
+    )
   }
 
   Scaffold(
@@ -145,7 +184,8 @@ fun DashboardScreen(
         // TOP HUD BAR
         DashboardTopBar(
           onOpenSettings = onOpenSettings,
-          onOpenHistory = onOpenHistory
+          onOpenHistory = onOpenHistory,
+          onOpenChart = onOpenChart
         )
 
         // Предупреждение об оптимизации батареи (если не отключена)
@@ -311,6 +351,8 @@ fun DashboardScreen(
                 title = "ОТКРЫТАЯ ПОЗИЦИЯ // ${openPos.symbol}",
                 icon = Icons.Outlined.TrendingUp,
                 borderColor = posColor,
+                flashTriggerId = flashEvent?.id,
+                flashType = flashEvent?.type ?: TradeFlashType.NONE,
                 modifier = Modifier.fillMaxWidth().testTag("open_position_card")
               ) {
                 Row(
@@ -810,6 +852,8 @@ fun DashboardScreen(
               title = "УПРАВЛЕНИЕ АЛГО-БОТОМ",
               icon = Icons.Outlined.SmartToy,
               borderColor = if (isBotActive) HudCyan else Color(0x66FF5252),
+              flashTriggerId = flashEvent?.id,
+              flashType = flashEvent?.type ?: TradeFlashType.NONE,
               modifier = Modifier.fillMaxWidth().testTag("bot_control_card")
             ) {
               Box(
@@ -1125,6 +1169,7 @@ fun DashboardScreen(
 fun DashboardTopBar(
   onOpenSettings: () -> Unit,
   onOpenHistory: () -> Unit = {},
+  onOpenChart: () -> Unit = {},
 ) {
   Row(
     modifier = Modifier
@@ -1161,6 +1206,12 @@ fun DashboardTopBar(
     }
 
     Row {
+      IconButton(
+        onClick = onOpenChart,
+        modifier = Modifier.size(34.dp).testTag("chart_nav_button")
+      ) {
+        Icon(Icons.Outlined.ShowChart, contentDescription = "График", tint = HudNeonPink)
+      }
       IconButton(
         onClick = onOpenHistory,
         modifier = Modifier.size(34.dp).testTag("history_nav_button")
