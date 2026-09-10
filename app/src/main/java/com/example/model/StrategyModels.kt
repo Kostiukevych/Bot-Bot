@@ -79,10 +79,17 @@ data class TradeRecord(
   var exitTime: Long? = null,
   var realizedPnlUsdt: Double? = null,
   var realizedPnlPercent: Double? = null,
-  var status: String = "OPEN",
+  var status: String = STATUS_OPEN,
   var exitReason: String? = null,
   var entryFeeUsdt: Double = 0.0,
   var exitFeeUsdt: Double = 0.0,
   var peakPrice: Double = 0.0,
   var trailingActive: Boolean = false,
-)
+) {
+  companion object {
+    const val STATUS_OPEN = "OPEN"
+    const val STATUS_CLOSE_PENDING_RETRY = "CLOSE_PENDING_RETRY"
+    const val STATUS_ERROR = "ERROR"
+    const val STATUS_CLOSED = "CLOSED"
+  }
+}

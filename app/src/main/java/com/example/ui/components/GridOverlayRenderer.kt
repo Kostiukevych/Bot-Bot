@@ -17,6 +17,10 @@ import com.example.ui.theme.*
 
 object GridOverlayRenderer {
 
+  private val boundDash = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f)
+  private val levelDash = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
+  private val peakDash = PathEffect.dashPathEffect(floatArrayOf(6f, 6f), 0f)
+
   fun drawGridOverlay(
     drawScope: DrawScope,
     gridState: GridBotState,
@@ -46,7 +50,6 @@ object GridOverlayRenderer {
       // 2. Линии верхней и нижней границы (Drag-маркеры)
       val hasCustomBounds = config.upperBound > 0.0 && config.lowerBound > 0.0
       if (hasCustomBounds) {
-        val boundDash = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f)
 
         // Верхняя граница (Upper Bound)
         val isUpperAbove = config.upperBound > displayMax
@@ -136,8 +139,6 @@ object GridOverlayRenderer {
       }
 
       // 3. Уровни сетки (Активные или превью при настройке)
-      val levelDash = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
-
       if (gridState.isActive && gridState.levels.isNotEmpty()) {
         for (level in gridState.levels) {
           val p = level.price
@@ -257,7 +258,6 @@ object GridOverlayRenderer {
       // 4. Пунктирная линия peakPrice (отслеживается для трейлинга)
       if (gridState.isActive && gridState.peakPrice > 0.0 && gridState.peakPrice in displayMin..displayMax) {
         val peakY = priceToY(gridState.peakPrice)
-        val peakDash = PathEffect.dashPathEffect(floatArrayOf(12f, 6f), 0f)
 
         drawLine(
           color = HudNeonPurple,

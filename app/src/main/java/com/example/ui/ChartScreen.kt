@@ -283,7 +283,7 @@ fun ChartScreen(
 
           HudCard(
             title = "ИНСТРУМЕНТ // РЫНОЧНЫЙ ТИКЕР",
-            icon = Icons.Outlined.ShowChart,
+            icon = Icons.AutoMirrored.Outlined.ShowChart,
             modifier = Modifier.fillMaxWidth()
           ) {
             Row(
@@ -823,7 +823,7 @@ fun ChartToolbar(
         contentAlignment = Alignment.Center
       ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.Outlined.ShowChart, contentDescription = null, tint = if (!isCandles) Color.White else HudTextMuted, modifier = Modifier.size(13.dp))
+          Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = null, tint = if (!isCandles) Color.White else HudTextMuted, modifier = Modifier.size(13.dp))
           Spacer(Modifier.width(4.dp))
           Text("ЛИНИЯ", color = if (!isCandles) Color.White else HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
         }

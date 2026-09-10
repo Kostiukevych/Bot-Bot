@@ -407,7 +407,7 @@ fun HistoryScreen(
                 verticalAlignment = Alignment.CenterVertically
               ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                  Icon(Icons.Outlined.ShowChart, contentDescription = null, tint = HudCyan, modifier = Modifier.size(16.dp))
+                  Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = null, tint = HudCyan, modifier = Modifier.size(16.dp))
                   Spacer(Modifier.width(6.dp))
                   Text("EQUITY CURVE // PnL", color = HudCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 }

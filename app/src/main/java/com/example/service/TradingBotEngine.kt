@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.update
 import kotlin.math.max
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 
 data class LogEvent(
   val timestamp: Long = System.currentTimeMillis(),
@@ -101,6 +102,15 @@ class TradingBotEngine(private val context: Context) {
   private var analysisJob: Job? = null
   private var tickerJob: Job? = null
   private var scannerJob: Job? = null
+  private val retryJobs = ConcurrentHashMap<String, Job>()
+
+  fun hasOpenPosition(symbol: String): Boolean {
+    val key = symbol.uppercase().trim()
+    val pos = orderService.openPositions[key] ?: return false
+    return pos.status == TradeRecord.STATUS_OPEN ||
+      pos.status == TradeRecord.STATUS_CLOSE_PENDING_RETRY ||
+      pos.status == TradeRecord.STATUS_ERROR
+  }
 
   val storageService = SecureStorageService(context)
   val authService = BinanceAuthService()
@@ -257,8 +267,8 @@ class TradingBotEngine(private val context: Context) {
   }
 
   private suspend fun runScanCycle() {
-    if (orderService.openPositions.isNotEmpty()) {
-      // Позиция уже открыта, дожидаемся её закрытия по TP/SL как обычно, сканер не переключает пару
+    if (orderService.openPositions.values.any { it.status in listOf(TradeRecord.STATUS_OPEN, TradeRecord.STATUS_CLOSE_PENDING_RETRY, TradeRecord.STATUS_ERROR) }) {
+      // Позиция уже открыта или ожидает повтора закрытия, дожидаемся её закрытия по TP/SL как обычно, сканер не переключает пару
       return
     }
 
@@ -333,6 +343,10 @@ class TradingBotEngine(private val context: Context) {
     // 1. Проверка Трейлинг-стопа и Take-Profit / Stop-Loss по открытой позиции
     val openPos = orderService.openPositions[sym]
     if (openPos != null) {
+      if (openPos.status == TradeRecord.STATUS_CLOSE_PENDING_RETRY || openPos.status == TradeRecord.STATUS_ERROR) {
+        // Позиция уже в процессе повтора закрытия или переведена в статус ошибки
+        return
+      }
       // Трейлинг-стоп для сигнального бота
       if (config.trailingEnabled) {
         if (curPrice > openPos.peakPrice) {
@@ -393,7 +407,7 @@ class TradingBotEngine(private val context: Context) {
       return
     }
 
-    if (sig.action == SignalAction.BUY_LONG && !orderService.hasOpenPosition(sym)) {
+    if (sig.action == SignalAction.BUY_LONG && !hasOpenPosition(sym)) {
       // Фильтр спреда перед открытием новой позиции (BUY)
       val book = marketService.getBookTicker(sym)
       if (book != null && book.spreadPercent > config.maxSpreadPercent) {
@@ -457,27 +471,31 @@ class TradingBotEngine(private val context: Context) {
       } else {
         addLog("❌ Ошибка ордера: ${res.errorMessage}", LogType.ORDER_ERROR)
       }
-    } else if (sig.action == SignalAction.SELL_SPOT && orderService.hasOpenPosition(sym)) {
-      addLog("🎯 Сигнал SELL Spot (score: ${sig.score}%), фиксация позиции...", LogType.SIGNAL)
-      executeClosePosition(
-        sym = sym,
-        exitPrice = curPrice,
-        reason = "Сигнал SELL Spot (score: ${sig.score}%)",
-        skipSpreadCheck = false
-      )
+    } else if (sig.action == SignalAction.SELL_SPOT && hasOpenPosition(sym)) {
+      val pos = orderService.openPositions[sym]
+      if (pos != null && pos.status == TradeRecord.STATUS_OPEN) {
+        addLog("🎯 Сигнал SELL Spot (score: ${sig.score}%), фиксация позиции...", LogType.SIGNAL)
+        executeClosePosition(
+          sym = sym,
+          exitPrice = curPrice,
+          reason = "Сигнал SELL Spot (score: ${sig.score}%)",
+          skipSpreadCheck = false
+        )
+      }
     }
   }
 
-  private suspend fun executeClosePosition(
+  suspend fun executeClosePosition(
     sym: String,
     exitPrice: Double,
     reason: String,
-    skipSpreadCheck: Boolean = false
+    skipSpreadCheck: Boolean = false,
+    retryCount: Int = 0
   ) {
     val pos = orderService.openPositions[sym] ?: return
     val config = _stateFlow.value.strategyConfig
 
-    // Проверка спреда только если не закрытие по TP/SL
+    // Проверка спреда только если не закрытие по TP/SL или повтор
     if (!skipSpreadCheck) {
       val book = marketService.getBookTicker(sym)
       if (book != null && book.spreadPercent > config.maxSpreadPercent) {
@@ -487,76 +505,141 @@ class TradingBotEngine(private val context: Context) {
     }
 
     val creds = storageService.getCredentials()
+    if (creds == null || creds.apiKey.isBlank() || creds.secretKey.isBlank()) {
+      pos.status = TradeRecord.STATUS_ERROR
+      syncPositionsAndHistory()
+      addLog("⚠️ НЕ УДАЛОСЬ закрыть позицию $sym на бирже (API ключи не настроены). Позиция ОСТАЁТСЯ открытой. Статус: ERROR.", LogType.ORDER_ERROR)
+      return
+    }
 
-    if (creds != null && creds.apiKey.isNotBlank()) {
-      val res = orderService.placeOrder(
-        apiKey = creds.apiKey,
-        secretKey = creds.secretKey,
+    val res = orderService.placeOrder(
+      apiKey = creds.apiKey,
+      secretKey = creds.secretKey,
+      symbol = sym,
+      side = "SELL",
+      type = "MARKET",
+      quantity = pos.quantity,
+      price = exitPrice,
+      pairInfo = _stateFlow.value.selectedPair
+    )
+
+    if (res.isSuccess) {
+      // 1. orderService.closePosition(...) вызывается ТОЛЬКО внутри блока if (res.isSuccess)
+      val fillPrice = if (res.price > 0) res.price else exitPrice
+      val exitFeeUsdt = (fillPrice * pos.quantity) * TAKER_FEE_PERCENT / 100.0
+      val grossProfitUsdt = (fillPrice - pos.entryPrice) * pos.quantity
+      val netProfitUsdt = grossProfitUsdt - (pos.entryFeeUsdt + exitFeeUsdt)
+      val invested = (pos.entryPrice * pos.quantity).coerceAtLeast(0.0001)
+      val netProfitPct = (netProfitUsdt / invested) * 100.0
+      val isProfit = netProfitUsdt >= 0
+
+      orderService.closePosition(
         symbol = sym,
-        side = "SELL",
-        type = "MARKET",
-        quantity = pos.quantity,
-        price = exitPrice,
-        pairInfo = _stateFlow.value.selectedPair
+        exitPrice = fillPrice,
+        reason = reason,
+        exitFeeUsdt = exitFeeUsdt,
+        netPnlUsdt = netProfitUsdt
       )
-      if (!res.isSuccess) {
-        addLog("⚠️ Ошибка закрытия ордера на бирже: ${res.errorMessage}. Закрываем локально.", LogType.ORDER_ERROR)
+      retryJobs[sym]?.cancel()
+      retryJobs.remove(sym)
+      syncPositionsAndHistory()
+
+      val pnlSign = if (netProfitUsdt >= 0) "+" else ""
+      val pnlPctStr = "${pnlSign}${"%.2f".format(Locale.US, netProfitPct)}%"
+      val pnlUsdtStr = "${pnlSign}${"%.2f".format(Locale.US, netProfitUsdt)} USDT"
+      val totalFeeStr = "комиссия: ${"%.3f".format(Locale.US, pos.entryFeeUsdt + exitFeeUsdt)} USDT"
+
+      val flashType = if (isProfit) TradeFlashType.PROFIT else TradeFlashType.LOSS
+
+      if (isProfit) {
+        addLog("✅ $reason: чистая прибыль $pnlPctStr ($pnlUsdtStr, $totalFeeStr)", LogType.PROFIT)
+      } else {
+        addLog("🛑 $reason: чистый убыток $pnlPctStr ($pnlUsdtStr, $totalFeeStr)", LogType.LOSS)
+      }
+
+      val updatedConsecutiveLosses = if (netProfitUsdt < 0) {
+        _stateFlow.value.consecutiveLosses + 1
+      } else {
+        0
+      }
+
+      val updatedSessionPnl = _stateFlow.value.sessionRealizedPnlUsdt + netProfitUsdt
+
+      _stateFlow.update {
+        it.copy(
+          sessionRealizedPnlUsdt = updatedSessionPnl,
+          consecutiveLosses = updatedConsecutiveLosses,
+          botStatus = if (orderService.openPositions.isEmpty()) BotStatus.ANALYSIS else BotStatus.LONG,
+          lastSuccessEvent = TradeFlashEvent(
+            id = "${pos.id}_closed_${System.currentTimeMillis()}",
+            type = flashType,
+            message = "$reason ($pnlPctStr)"
+          )
+        )
+      }
+      // 4. Синхронизация баланса с реальным аккаунтом после подтверждённого биржей закрытия
+      refreshBalance()
+
+      // Проверка условий Circuit Breaker
+      checkCircuitBreaker(updatedConsecutiveLosses)
+    } else {
+      // 2. Если res.isSuccess == false — НЕ закрываем позицию локально
+      val errDetail = res.errorMessage ?: "Неизвестная ошибка биржи"
+      if (retryCount < 5) {
+        pos.status = TradeRecord.STATUS_CLOSE_PENDING_RETRY
+        syncPositionsAndHistory()
+        addLog(
+          "⚠️ НЕ УДАЛОСЬ закрыть позицию $sym на бирже ($errDetail). Позиция ОСТАЁТСЯ открытой. Повтор через 8 секунд.",
+          LogType.ORDER_ERROR
+        )
+
+        retryJobs[sym]?.cancel()
+        retryJobs[sym] = engineScope.launch {
+          delay(8000)
+          if (!isActive) return@launch
+          val currentPos = orderService.openPositions[sym]
+          if (currentPos != null && currentPos.status == TradeRecord.STATUS_CLOSE_PENDING_RETRY) {
+            val curPrice = _stateFlow.value.tickerData?.lastPrice ?: exitPrice
+            executeClosePosition(
+              sym = sym,
+              exitPrice = curPrice,
+              reason = reason,
+              skipSpreadCheck = true,
+              retryCount = retryCount + 1
+            )
+          }
+        }
+      } else {
+        pos.status = TradeRecord.STATUS_ERROR
+        retryJobs[sym]?.cancel()
+        retryJobs.remove(sym)
+        syncPositionsAndHistory()
+        addLog(
+          "❌ Превышен лимит (5) попыток закрытия позиции $sym на бирже ($errDetail). Позиция переведена в статус ERROR. Требуется ручное закрытие.",
+          LogType.ORDER_ERROR
+        )
       }
     }
+  }
 
-    val exitFeeUsdt = (exitPrice * pos.quantity) * TAKER_FEE_PERCENT / 100.0
-    val grossProfitUsdt = (exitPrice - pos.entryPrice) * pos.quantity
-    val netProfitUsdt = grossProfitUsdt - (pos.entryFeeUsdt + exitFeeUsdt)
-    val invested = (pos.entryPrice * pos.quantity).coerceAtLeast(0.0001)
-    val netProfitPct = (netProfitUsdt / invested) * 100.0
-    val isProfit = netProfitUsdt >= 0
-
-    orderService.closePosition(
-      symbol = sym,
-      exitPrice = exitPrice,
-      reason = reason,
-      exitFeeUsdt = exitFeeUsdt,
-      netPnlUsdt = netProfitUsdt
-    )
+  fun retryClosePositionManually(symbol: String) {
+    val sym = symbol.uppercase().trim()
+    val pos = orderService.openPositions[sym] ?: return
+    pos.status = TradeRecord.STATUS_CLOSE_PENDING_RETRY
     syncPositionsAndHistory()
+    addLog("🔄 Ручной повтор закрытия позиции $sym...", LogType.INFO)
 
-    val pnlSign = if (netProfitUsdt >= 0) "+" else ""
-    val pnlPctStr = "${pnlSign}${"%.2f".format(Locale.US, netProfitPct)}%"
-    val pnlUsdtStr = "${pnlSign}${"%.2f".format(Locale.US, netProfitUsdt)} USDT"
-    val totalFeeStr = "комиссия: ${"%.3f".format(Locale.US, pos.entryFeeUsdt + exitFeeUsdt)} USDT"
-
-    val flashType = if (isProfit) TradeFlashType.PROFIT else TradeFlashType.LOSS
-
-    if (isProfit) {
-      addLog("✅ $reason: чистая прибыль $pnlPctStr ($pnlUsdtStr, $totalFeeStr)", LogType.PROFIT)
-    } else {
-      addLog("🛑 $reason: чистый убыток $pnlPctStr ($pnlUsdtStr, $totalFeeStr)", LogType.LOSS)
-    }
-
-    val updatedConsecutiveLosses = if (netProfitUsdt < 0) {
-      _stateFlow.value.consecutiveLosses + 1
-    } else {
-      0
-    }
-
-    val updatedSessionPnl = _stateFlow.value.sessionRealizedPnlUsdt + netProfitUsdt
-
-    _stateFlow.update {
-      it.copy(
-        sessionRealizedPnlUsdt = updatedSessionPnl,
-        consecutiveLosses = updatedConsecutiveLosses,
-        botStatus = BotStatus.ANALYSIS,
-        lastSuccessEvent = TradeFlashEvent(
-          id = "${pos.id}_closed_${System.currentTimeMillis()}",
-          type = flashType,
-          message = "$reason ($pnlPctStr)"
-        )
+    retryJobs[sym]?.cancel()
+    retryJobs[sym] = engineScope.launch {
+      val curPrice = _stateFlow.value.tickerData?.lastPrice ?: pos.entryPrice
+      executeClosePosition(
+        sym = sym,
+        exitPrice = curPrice,
+        reason = "Ручной повтор закрытия",
+        skipSpreadCheck = true,
+        retryCount = 0
       )
     }
-    refreshBalance()
-
-    // Проверка условий Circuit Breaker
-    checkCircuitBreaker(updatedConsecutiveLosses)
   }
 
   private fun checkCircuitBreaker(consecutiveLosses: Int) {
@@ -613,7 +696,7 @@ class TradingBotEngine(private val context: Context) {
 
       for (pos in curPositions) {
         val curPrice = _stateFlow.value.tickerData?.lastPrice ?: pos.entryPrice
-        executeClosePosition(pos.symbol, curPrice, "ЭКСТРЕННОЕ РУЧНОЕ ЗАКРЫТИЕ")
+        executeClosePosition(pos.symbol, curPrice, "ЭКСТРЕННОЕ РУЧНОЕ ЗАКРЫТИЕ", skipSpreadCheck = true)
       }
     }
   }

@@ -84,6 +84,9 @@ fun BacktestBottomSheet(
   val strategyService = app.botEngine.strategyService
   val backtestEngine = app.backtestEngine
 
+  // Выбранный тип бота для бэктеста (можно переключать внутри шторки)
+  var currentBotType by remember(botType) { mutableStateOf(botType) }
+
   // Период
   var selectedPreset by remember { mutableStateOf(BacktestPeriodPreset.D7) }
   var customCandlesText by remember { mutableStateOf("500") }
@@ -149,18 +152,23 @@ fun BacktestBottomSheet(
         .padding(horizontal = 16.dp, vertical = 8.dp)
         .padding(bottom = 32.dp)
     ) {
-      // Заголовок
+      // Заголовок: синхронизирован с currentBotType
       Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
       ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.Outlined.Science, contentDescription = null, tint = HudCyan, modifier = Modifier.size(22.dp))
+          Icon(
+            Icons.Outlined.Science,
+            contentDescription = null,
+            tint = if (currentBotType == BacktestBotType.SIGNAL_BOT) HudCyan else HudNeonPink,
+            modifier = Modifier.size(22.dp)
+          )
           Spacer(Modifier.width(8.dp))
           Column {
             Text(
-              if (botType == BacktestBotType.SIGNAL_BOT) "БЭКТЕСТ // СИГНАЛЬНЫЙ БОТ" else "БЭКТЕСТ // СЕТОЧНЫЙ БОТ",
+              if (currentBotType == BacktestBotType.SIGNAL_BOT) "БЭКТЕСТ: СИГНАЛЬНЫЙ БОТ" else "БЭКТЕСТ: СЕТОЧНЫЙ БОТ",
               color = Color.White,
               fontWeight = FontWeight.Bold,
               fontSize = 14.sp,
@@ -177,15 +185,107 @@ fun BacktestBottomSheet(
 
         Box(
           modifier = Modifier
-            .background(Color(0x2200D4FF), RoundedCornerShape(4.dp))
-            .border(1.dp, HudCyan, RoundedCornerShape(4.dp))
+            .background(
+              if (currentBotType == BacktestBotType.SIGNAL_BOT) Color(0x2200D4FF) else Color(0x22FF2A85),
+              RoundedCornerShape(4.dp)
+            )
+            .border(
+              1.dp,
+              if (currentBotType == BacktestBotType.SIGNAL_BOT) HudCyan else HudNeonPink,
+              RoundedCornerShape(4.dp)
+            )
             .padding(horizontal = 8.dp, vertical = 4.dp)
         ) {
-          Text("ИСТОРИЯ", color = HudCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+          Text(
+            if (currentBotType == BacktestBotType.SIGNAL_BOT) "SIGNAL" else "GRID",
+            color = if (currentBotType == BacktestBotType.SIGNAL_BOT) HudCyan else HudNeonPink,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace
+          )
         }
       }
 
-      Spacer(Modifier.height(16.dp))
+      Spacer(Modifier.height(14.dp))
+
+      // ПЕРЕКЛЮЧАТЕЛЬ ТИПА БОТА (СИГНАЛЬНЫЙ / СЕТОЧНЫЙ)
+      Text("ТИП АЛГОРИТМА ДЛЯ БЭКТЕСТА:", color = HudTextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+      Spacer(Modifier.height(6.dp))
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(Color(0xFF071220), RoundedCornerShape(8.dp))
+          .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(8.dp))
+          .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+      ) {
+        val isSignalSelected = currentBotType == BacktestBotType.SIGNAL_BOT
+        val isGridSelected = currentBotType == BacktestBotType.GRID_BOT
+
+        // Таб 1: Сигнальный бот
+        Box(
+          modifier = Modifier
+            .weight(1f)
+            .background(
+              if (isSignalSelected) HudCyan else Color.Transparent,
+              RoundedCornerShape(6.dp)
+            )
+            .clickable { currentBotType = BacktestBotType.SIGNAL_BOT }
+            .padding(vertical = 8.dp)
+            .testTag("backtest_tab_signal_bot"),
+          contentAlignment = Alignment.Center
+        ) {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+              Icons.AutoMirrored.Outlined.TrendingUp,
+              contentDescription = null,
+              tint = if (isSignalSelected) HudNavyDark else HudTextMuted,
+              modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+              "Сигнальный бот",
+              color = if (isSignalSelected) HudNavyDark else Color.White,
+              fontWeight = FontWeight.Bold,
+              fontSize = 12.sp,
+              fontFamily = FontFamily.Monospace
+            )
+          }
+        }
+
+        // Таб 2: Сеточный бот
+        Box(
+          modifier = Modifier
+            .weight(1f)
+            .background(
+              if (isGridSelected) HudNeonPink else Color.Transparent,
+              RoundedCornerShape(6.dp)
+            )
+            .clickable { currentBotType = BacktestBotType.GRID_BOT }
+            .padding(vertical = 8.dp)
+            .testTag("backtest_tab_grid_bot"),
+          contentAlignment = Alignment.Center
+        ) {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+              Icons.Outlined.GridOn,
+              contentDescription = null,
+              tint = if (isGridSelected) Color.White else HudTextMuted,
+              modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+              "Сеточный бот",
+              color = Color.White,
+              fontWeight = FontWeight.Bold,
+              fontSize = 12.sp,
+              fontFamily = FontFamily.Monospace
+            )
+          }
+        }
+      }
+
+      Spacer(Modifier.height(14.dp))
 
       // 1. Выбор периода бэктеста
       Text("ПЕРИОД ТЕСТИРОВАНИЯ:", color = HudTextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
@@ -284,8 +384,8 @@ fun BacktestBottomSheet(
 
       Spacer(Modifier.height(14.dp))
 
-      // 3. Параметры стратегии
-      if (botType == BacktestBotType.SIGNAL_BOT) {
+      // 3. Параметры стратегии (отображаются в зависимости от выбранного таба currentBotType)
+      if (currentBotType == BacktestBotType.SIGNAL_BOT) {
         Text("ПАРАМЕТРЫ СИГНАЛЬНОЙ СТРАТЕГИИ:", color = HudTextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
         Spacer(Modifier.height(8.dp))
 
@@ -426,7 +526,7 @@ fun BacktestBottomSheet(
               val config = BacktestConfig(
                 symbol = symbol,
                 interval = interval,
-                botType = botType,
+                botType = currentBotType,
                 candleCount = candleCnt,
                 initialBalanceUsdt = initBal,
                 strategyRiskConfig = StrategyRiskConfig(
@@ -446,7 +546,7 @@ fun BacktestBottomSheet(
                 )
               )
 
-              val result = if (botType == BacktestBotType.SIGNAL_BOT) {
+              val result = if (currentBotType == BacktestBotType.SIGNAL_BOT) {
                 backtestEngine.runSignalBotBacktest(config, marketService, strategyService)
               } else {
                 backtestEngine.runGridBotBacktest(config, marketService)
@@ -469,7 +569,7 @@ fun BacktestBottomSheet(
           .testTag("run_backtest_button"),
         shape = CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp),
         colors = ButtonDefaults.buttonColors(
-          containerColor = if (botType == BacktestBotType.SIGNAL_BOT) HudCyan else HudNeonPink
+          containerColor = if (currentBotType == BacktestBotType.SIGNAL_BOT) HudCyan else HudNeonPink
         )
       ) {
         if (isLoading) {
@@ -720,7 +820,7 @@ fun EquityCurveChart(
         verticalAlignment = Alignment.CenterVertically
       ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.Outlined.TrendingUp, contentDescription = null, tint = HudCyan, modifier = Modifier.size(14.dp))
+          Icon(Icons.AutoMirrored.Outlined.TrendingUp, contentDescription = null, tint = HudCyan, modifier = Modifier.size(14.dp))
           Spacer(Modifier.width(4.dp))
           Text(
             "КРИВАЯ ДЕПОЗИТА // EQUITY CURVE",

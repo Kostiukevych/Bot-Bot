@@ -255,7 +255,7 @@ fun DashboardScreen(
                   shape = CutCornerShape(4.dp),
                   modifier = Modifier.fillMaxWidth().testTag("view_on_chart_button")
                 ) {
-                  Icon(Icons.Outlined.ShowChart, contentDescription = null, tint = HudNeonPurple, modifier = Modifier.size(16.dp))
+                  Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = null, tint = HudNeonPurple, modifier = Modifier.size(16.dp))
                   Spacer(Modifier.width(6.dp))
                   Text(
                     "ОТКРЫТЬ НА ИНТЕРАКТИВНОМ ГРАФИКЕ",
@@ -387,131 +387,219 @@ fun DashboardScreen(
               val posColor = if (isProfit) HudGreen else HudRed
               val pnlSign = if (isProfit) "+" else ""
 
+              val isPendingRetry = openPos.status == TradeRecord.STATUS_CLOSE_PENDING_RETRY
+              val isError = openPos.status == TradeRecord.STATUS_ERROR
+              val isCloseIssue = isPendingRetry || isError
+              val warningBorderColor = if (isError) Color(0xFFFF9800) else Color(0xFFFFB300)
+              val cardBorderColor = if (isCloseIssue) warningBorderColor else posColor
+
               HudCard(
                 title = "ОТКРЫТАЯ ПОЗИЦИЯ // ${openPos.symbol}",
-                icon = Icons.Outlined.TrendingUp,
-                borderColor = posColor,
+                icon = if (isCloseIssue) Icons.Outlined.WarningAmber else Icons.AutoMirrored.Outlined.TrendingUp,
+                borderColor = cardBorderColor,
                 flashTriggerId = flashEvent?.id,
                 flashType = flashEvent?.type ?: TradeFlashType.NONE,
                 modifier = Modifier.fillMaxWidth().testTag("open_position_card")
               ) {
-                Row(
-                  modifier = Modifier.fillMaxWidth(),
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                  verticalAlignment = Alignment.CenterVertically
-                ) {
-                  Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isCloseIssue) {
+                  Column(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .padding(vertical = 4.dp)
+                  ) {
                     Box(
                       modifier = Modifier
-                        .background(HudGreen.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
-                        .border(1.dp, HudGreen, RoundedCornerShape(4.dp))
-                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                        .fillMaxWidth()
+                        .background(warningBorderColor.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
+                        .border(1.dp, warningBorderColor.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                        .padding(12.dp)
                     ) {
-                      Text("LONG", color = HudGreen, fontWeight = FontWeight.Bold, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                      Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                          Icon(
+                            Icons.Outlined.WarningAmber,
+                            contentDescription = null,
+                            tint = warningBorderColor,
+                            modifier = Modifier.size(20.dp)
+                          )
+                          Spacer(Modifier.width(8.dp))
+                          Text(
+                            if (isError) "СТАТУС: ERROR (ОШИБКА ЗАКРЫТИЯ)" else "СТАТУС: CLOSE_PENDING_RETRY",
+                            color = warningBorderColor,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace
+                          )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                          "⚠️ Закрытие не подтверждено биржей, повтор попытки...",
+                          color = Color.White,
+                          fontSize = 12.sp,
+                          fontWeight = FontWeight.Medium,
+                          fontFamily = FontFamily.Monospace,
+                          lineHeight = 16.sp
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                          modifier = Modifier.fillMaxWidth(),
+                          horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                          Text("Объем: ${"%.4f".format(Locale.US, openPos.quantity)}", color = HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                          Text("Вход: ${"%.2f".format(Locale.US, openPos.entryPrice)}", color = HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                          Text("Текущая: ${"%.2f".format(Locale.US, curPrice)}", color = HudCyan, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        }
+                      }
                     }
-                    Spacer(Modifier.width(8.dp))
-                    Column {
-                      Text(openPos.symbol, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, fontFamily = FontFamily.Monospace)
-                      Text("Объем: ${"%.4f".format(Locale.US, openPos.quantity)}", color = HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+
+                    if (isError) {
+                      Spacer(Modifier.height(10.dp))
+                      Button(
+                        onClick = {
+                          botEngine.retryClosePositionManually(openPos.symbol)
+                        },
+                        modifier = Modifier
+                          .fillMaxWidth()
+                          .testTag("retry_close_manual_button"),
+                        shape = RoundedCornerShape(6.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                      ) {
+                        Icon(
+                          Icons.Outlined.Refresh,
+                          contentDescription = null,
+                          tint = Color.Black,
+                          modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                          "Повторить закрытие вручную",
+                          color = Color.Black,
+                          fontWeight = FontWeight.Bold,
+                          fontSize = 12.sp,
+                          fontFamily = FontFamily.Monospace
+                        )
+                      }
+                    }
+                  }
+                } else {
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                      Box(
+                        modifier = Modifier
+                          .background(HudGreen.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
+                          .border(1.dp, HudGreen, RoundedCornerShape(4.dp))
+                          .padding(horizontal = 8.dp, vertical = 3.dp)
+                      ) {
+                        Text("LONG", color = HudGreen, fontWeight = FontWeight.Bold, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                      }
+                      Spacer(Modifier.width(8.dp))
+                      Column {
+                        Text(openPos.symbol, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp, fontFamily = FontFamily.Monospace)
+                        Text("Объем: ${"%.4f".format(Locale.US, openPos.quantity)}", color = HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                      }
+                    }
+
+                    // Нереализованный PnL в USDT и %
+                    Column(horizontalAlignment = Alignment.End) {
+                      Text(
+                        "${pnlSign}${"%.2f".format(Locale.US, unRealizedPnlUsdt)} USDT",
+                        color = posColor,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        fontFamily = FontFamily.Monospace
+                      )
+                      Text(
+                        "${pnlSign}${"%.2f".format(Locale.US, unRealizedPnlPct)}%",
+                        color = posColor,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                      )
                     }
                   }
 
-                  // Нереализованный PnL в USDT и %
-                  Column(horizontalAlignment = Alignment.End) {
+                  Spacer(Modifier.height(10.dp))
+
+                  // Цены: Вход / Текущая
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                  ) {
+                    Box(
+                      modifier = Modifier
+                        .weight(1f)
+                        .background(Color(0xFF071220), RoundedCornerShape(6.dp))
+                        .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(6.dp))
+                        .padding(8.dp)
+                    ) {
+                      Column {
+                        Text("ЦЕНА ВХОДА", color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                        Text("${"%.2f".format(Locale.US, openPos.entryPrice)}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                      }
+                    }
+                    Box(
+                      modifier = Modifier
+                        .weight(1f)
+                        .background(Color(0xFF071220), RoundedCornerShape(6.dp))
+                        .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(6.dp))
+                        .padding(8.dp)
+                    ) {
+                      Column {
+                        Text("ТЕКУЩАЯ ЦЕНА (WS)", color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                        Text("${"%.2f".format(Locale.US, curPrice)}", color = HudCyan, fontWeight = FontWeight.Bold, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                      }
+                    }
+                  }
+
+                  Spacer(Modifier.height(8.dp))
+
+                  // Уровни SL / TP
+                  Row(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .background(Color(0x1A00D4FF), RoundedCornerShape(6.dp))
+                      .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(6.dp))
+                      .padding(8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                  ) {
+                    Text("SL: ${"%.2f".format(Locale.US, openPos.stopLossPrice)} USDT", color = HudRed, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    Text("TP: ${"%.2f".format(Locale.US, openPos.takeProfitPrice)} USDT", color = HudGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                  }
+
+                  Spacer(Modifier.height(6.dp))
+
+                  // Трейлинг и комиссии
+                  Row(
+                    modifier = Modifier
+                      .fillMaxWidth()
+                      .background(Color(0xFF071220), RoundedCornerShape(6.dp))
+                      .padding(horizontal = 8.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                  ) {
+                    val trailingText = when {
+                      openPos.trailingActive -> "ТРЕЙЛИНГ: АКТИВЕН (пик: ${"%.2f".format(Locale.US, openPos.peakPrice)})"
+                      botState.strategyConfig.trailingEnabled -> "ТРЕЙЛИНГ: ОЖИДАЕТ (+${botState.strategyConfig.trailingActivationPercent}%)"
+                      else -> "ТРЕЙЛИНГ: ВЫКЛ"
+                    }
                     Text(
-                      "${pnlSign}${"%.2f".format(Locale.US, unRealizedPnlUsdt)} USDT",
-                      color = posColor,
-                      fontWeight = FontWeight.Bold,
-                      fontSize = 15.sp,
-                      fontFamily = FontFamily.Monospace
+                      trailingText,
+                      color = if (openPos.trailingActive) HudGreen else HudTextMuted,
+                      fontSize = 9.sp,
+                      fontFamily = FontFamily.Monospace,
+                      fontWeight = FontWeight.Bold
                     )
                     Text(
-                      "${pnlSign}${"%.2f".format(Locale.US, unRealizedPnlPct)}%",
-                      color = posColor,
-                      fontWeight = FontWeight.Bold,
-                      fontSize = 12.sp,
+                      "Вход fee: ${"%.3f".format(Locale.US, openPos.entryFeeUsdt)} USDT",
+                      color = HudTextMuted,
+                      fontSize = 9.sp,
                       fontFamily = FontFamily.Monospace
                     )
                   }
-                }
-
-                Spacer(Modifier.height(10.dp))
-
-                // Цены: Вход / Текущая
-                Row(
-                  modifier = Modifier.fillMaxWidth(),
-                  horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                  Box(
-                    modifier = Modifier
-                      .weight(1f)
-                      .background(Color(0xFF071220), RoundedCornerShape(6.dp))
-                      .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(6.dp))
-                      .padding(8.dp)
-                  ) {
-                    Column {
-                      Text("ЦЕНА ВХОДА", color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
-                      Text("${"%.2f".format(Locale.US, openPos.entryPrice)}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                    }
-                  }
-                  Box(
-                    modifier = Modifier
-                      .weight(1f)
-                      .background(Color(0xFF071220), RoundedCornerShape(6.dp))
-                      .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(6.dp))
-                      .padding(8.dp)
-                  ) {
-                    Column {
-                      Text("ТЕКУЩАЯ ЦЕНА (WS)", color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
-                      Text("${"%.2f".format(Locale.US, curPrice)}", color = HudCyan, fontWeight = FontWeight.Bold, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                    }
-                  }
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                // Уровни SL / TP
-                Row(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0x1A00D4FF), RoundedCornerShape(6.dp))
-                    .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(6.dp))
-                    .padding(8.dp),
-                  horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                  Text("SL: ${"%.2f".format(Locale.US, openPos.stopLossPrice)} USDT", color = HudRed, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                  Text("TP: ${"%.2f".format(Locale.US, openPos.takeProfitPrice)} USDT", color = HudGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                }
-
-                Spacer(Modifier.height(6.dp))
-
-                // Трейлинг и комиссии
-                Row(
-                  modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFF071220), RoundedCornerShape(6.dp))
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                  horizontalArrangement = Arrangement.SpaceBetween,
-                  verticalAlignment = Alignment.CenterVertically
-                ) {
-                  val trailingText = when {
-                    openPos.trailingActive -> "ТРЕЙЛИНГ: АКТИВЕН (пик: ${"%.2f".format(Locale.US, openPos.peakPrice)})"
-                    botState.strategyConfig.trailingEnabled -> "ТРЕЙЛИНГ: ОЖИДАЕТ (+${botState.strategyConfig.trailingActivationPercent}%)"
-                    else -> "ТРЕЙЛИНГ: ВЫКЛ"
-                  }
-                  Text(
-                    trailingText,
-                    color = if (openPos.trailingActive) HudGreen else HudTextMuted,
-                    fontSize = 9.sp,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold
-                  )
-                  Text(
-                    "Вход fee: ${"%.3f".format(Locale.US, openPos.entryFeeUsdt)} USDT",
-                    color = HudTextMuted,
-                    fontSize = 9.sp,
-                    fontFamily = FontFamily.Monospace
-                  )
                 }
               }
             }
@@ -525,7 +613,7 @@ fun DashboardScreen(
 
             HudCard(
               title = "РЫНОЧНЫЙ ТИКЕР // LIVE STREAM",
-              icon = Icons.Outlined.ShowChart,
+              icon = Icons.AutoMirrored.Outlined.ShowChart,
               modifier = Modifier.fillMaxWidth().testTag("pair_selector_card")
             ) {
               Row(
@@ -1211,7 +1299,7 @@ fun DashboardScreen(
           item {
             HudCard(
               title = "ЖУРНАЛ БОТА // LIVE LOG",
-              icon = Icons.Outlined.ReceiptLong,
+              icon = Icons.AutoMirrored.Outlined.ReceiptLong,
               borderColor = HudCyan,
               modifier = Modifier.fillMaxWidth().testTag("bot_logs_card")
             ) {
@@ -1278,7 +1366,7 @@ fun DashboardScreen(
           item {
             HudCard(
               title = "АКТИВНЫЕ ОРДЕРА (${openOrders.size})",
-              icon = Icons.Outlined.ListAlt,
+              icon = Icons.AutoMirrored.Outlined.ListAlt,
               modifier = Modifier.fillMaxWidth().testTag("open_orders_card")
             ) {
               if (openOrders.isEmpty()) {
@@ -1488,6 +1576,7 @@ fun DashboardScreen(
   }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardTopBar(
   onOpenSettings: () -> Unit,
@@ -1495,64 +1584,135 @@ fun DashboardTopBar(
   onOpenChart: () -> Unit = {},
   onOpenBacktest: () -> Unit = {},
 ) {
-  Row(
+  var menuExpanded by remember { mutableStateOf(false) }
+
+  BoxWithConstraints(
     modifier = Modifier
       .fillMaxWidth()
       .background(Color(0xDD0A182C), CutCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp))
       .border(1.2.dp, Color(0x3300D4FF), CutCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp))
-      .padding(horizontal = 14.dp, vertical = 10.dp),
-    horizontalArrangement = Arrangement.SpaceBetween,
-    verticalAlignment = Alignment.CenterVertically
+      .padding(horizontal = 10.dp, vertical = 8.dp)
   ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-      Box(
-        modifier = Modifier
-          .size(8.dp)
-          .background(HudGreen, RoundedCornerShape(4.dp))
-      )
-      Spacer(Modifier.width(8.dp))
-      Column {
+    val isNarrow = maxWidth < 420.dp
+
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Row(
+        modifier = Modifier.weight(1f, fill = false).padding(end = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Box(
+          modifier = Modifier
+            .size(7.dp)
+            .background(HudGreen, RoundedCornerShape(3.dp))
+        )
+        Spacer(Modifier.width(6.dp))
         Text(
           "BINANCE TERMINAL // SPOT TESTNET",
           color = Color.White,
           fontWeight = FontWeight.Bold,
-          fontSize = 12.sp,
+          fontSize = 11.sp,
           fontFamily = FontFamily.Monospace,
-          letterSpacing = 1.sp
-        )
-        Text(
-          "ALGO ENGINE ACTIVE // SECURE RSA",
-          color = HudCyan,
-          fontSize = 9.sp,
-          fontFamily = FontFamily.Monospace
+          letterSpacing = 0.5.sp,
+          maxLines = 1,
+          overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
         )
       }
-    }
 
-    Row {
-      IconButton(
-        onClick = onOpenBacktest,
-        modifier = Modifier.size(34.dp).testTag("backtest_nav_button")
-      ) {
-        Icon(Icons.Outlined.Science, contentDescription = "Бэктест", tint = HudNeonPurple)
-      }
-      IconButton(
-        onClick = onOpenChart,
-        modifier = Modifier.size(34.dp).testTag("chart_nav_button")
-      ) {
-        Icon(Icons.Outlined.ShowChart, contentDescription = "График", tint = HudNeonPink)
-      }
-      IconButton(
-        onClick = onOpenHistory,
-        modifier = Modifier.size(34.dp).testTag("history_nav_button")
-      ) {
-        Icon(Icons.Outlined.ReceiptLong, contentDescription = "History", tint = HudCyan)
-      }
-      IconButton(
-        onClick = onOpenSettings,
-        modifier = Modifier.size(34.dp).testTag("settings_button")
-      ) {
-        Icon(Icons.Outlined.Settings, contentDescription = "Settings", tint = HudCyan)
+      CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+          if (!isNarrow) {
+            IconButton(
+              onClick = onOpenBacktest,
+              modifier = Modifier.size(30.dp).testTag("backtest_nav_button")
+            ) {
+              Icon(Icons.Outlined.Science, contentDescription = "Бэктест", tint = HudNeonPurple, modifier = Modifier.size(18.dp))
+            }
+            IconButton(
+              onClick = onOpenChart,
+              modifier = Modifier.size(30.dp).testTag("chart_nav_button")
+            ) {
+              Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = "График", tint = HudNeonPink, modifier = Modifier.size(18.dp))
+            }
+          }
+
+          IconButton(
+            onClick = onOpenHistory,
+            modifier = Modifier.size(30.dp).testTag("history_nav_button")
+          ) {
+            Icon(Icons.AutoMirrored.Outlined.ReceiptLong, contentDescription = "History", tint = HudCyan, modifier = Modifier.size(18.dp))
+          }
+          IconButton(
+            onClick = onOpenSettings,
+            modifier = Modifier.size(30.dp).testTag("settings_button")
+          ) {
+            Icon(Icons.Outlined.Settings, contentDescription = "Settings", tint = HudCyan, modifier = Modifier.size(18.dp))
+          }
+
+          if (isNarrow) {
+            Box {
+              IconButton(
+                onClick = { menuExpanded = true },
+                modifier = Modifier.size(30.dp).testTag("more_menu_button")
+              ) {
+                Icon(Icons.Default.MoreVert, contentDescription = "Дополнительно", tint = HudCyan, modifier = Modifier.size(18.dp))
+              }
+
+              DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false },
+                modifier = Modifier
+                  .background(Color(0xFF0D2340))
+                  .border(1.dp, Color(0x4400D4FF), RoundedCornerShape(8.dp))
+              ) {
+                DropdownMenuItem(
+                  text = {
+                    Text(
+                      "Бэктест",
+                      color = Color.White,
+                      fontSize = 12.sp,
+                      fontFamily = FontFamily.Monospace,
+                      fontWeight = FontWeight.Bold
+                    )
+                  },
+                  leadingIcon = {
+                    Icon(Icons.Outlined.Science, contentDescription = null, tint = HudNeonPurple, modifier = Modifier.size(18.dp))
+                  },
+                  onClick = {
+                    menuExpanded = false
+                    onOpenBacktest()
+                  },
+                  modifier = Modifier.testTag("backtest_nav_button")
+                )
+                DropdownMenuItem(
+                  text = {
+                    Text(
+                      "График",
+                      color = Color.White,
+                      fontSize = 12.sp,
+                      fontFamily = FontFamily.Monospace,
+                      fontWeight = FontWeight.Bold
+                    )
+                  },
+                  leadingIcon = {
+                    Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = null, tint = HudNeonPink, modifier = Modifier.size(18.dp))
+                  },
+                  onClick = {
+                    menuExpanded = false
+                    onOpenChart()
+                  },
+                  modifier = Modifier.testTag("chart_nav_button")
+                )
+              }
+            }
+          }
+        }
       }
     }
   }
