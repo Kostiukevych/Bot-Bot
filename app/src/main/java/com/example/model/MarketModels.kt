@@ -18,8 +18,17 @@ data class TickerData(
   val highPrice: Double = 0.0,
   val lowPrice: Double = 0.0,
   val volume: Double = 0.0,
+  val quoteVolume: Double = 0.0,
 ) {
   val isPositive: Boolean get() = priceChangePercent >= 0
+}
+
+data class BookTicker(
+  val symbol: String,
+  val bidPrice: Double,
+  val askPrice: Double
+) {
+  val spreadPercent: Double get() = if (askPrice > 0) (askPrice - bidPrice) / askPrice * 100.0 else 0.0
 }
 
 data class OpenOrder(

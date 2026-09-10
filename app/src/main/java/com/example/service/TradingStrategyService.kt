@@ -69,7 +69,17 @@ class TradingStrategyService(
     val rsi = calculateRsi(closes, 14)
     val emaFast = calculateEma(closes, 9)
     val emaSlow = calculateEma(closes, 21)
-    val macd = emaFast - emaSlow
+
+    // Честный расчет MACD (EMA12/EMA26, сигнальная линия EMA9 от ряда MACD)
+    val emaFastSeries = calculateEmaSeries(closes, 12)
+    val emaSlowSeries = calculateEmaSeries(closes, 26)
+    val macdSeries = emaFastSeries.zip(emaSlowSeries) { f, s -> f - s }
+    val signalSeries = calculateEmaSeries(macdSeries, 9)
+    val macdLine = macdSeries.lastOrNull() ?: 0.0
+    val macdSignal = signalSeries.lastOrNull() ?: 0.0
+    val macdHist = macdLine - macdSignal
+
+    val atr = calculateAtr(klines, config.atrPeriod)
     val avgVol = if (volumes.isNotEmpty()) volumes.takeLast(20).average() else 100.0
     val curVol = volumes.lastOrNull() ?: 120.0
 
@@ -83,14 +93,15 @@ class TradingStrategyService(
       rsi = rsi,
       emaFast = emaFast,
       emaSlow = emaSlow,
-      macdLine = macd,
-      macdSignal = macd * 0.9,
-      macdHist = macd * 0.1,
+      macdLine = macdLine,
+      macdSignal = macdSignal,
+      macdHist = macdHist,
       currentVolume = curVol,
       avgVolume = avgVol,
       bbUpper = bbUpper,
       bbMiddle = bbMid,
-      bbLower = bbLower
+      bbLower = bbLower,
+      atr = atr
     )
 
     var longScore = 0
@@ -116,7 +127,8 @@ class TradingStrategyService(
       shortScore += 10
     }
 
-    if (macd >= 0) {
+    // Сигнал по гистограмме MACD (пересечение MACD и сигнальной линии)
+    if (macdHist >= 0) {
       longScore += 20
       matched.add("MACD-гистограмма в положительной зоне")
     } else {
@@ -146,16 +158,34 @@ class TradingStrategyService(
 
     val finalScore = max(longScore, shortScore).coerceIn(0, 100)
 
-    val sl = if (action == SignalAction.BUY_LONG) {
-      currentPrice * (1.0 - (config.stopLossPercent / 100.0))
+    // Расчет Stop-Loss с поддержкой волатильного ATR
+    val sl = if (config.useAtrSlTp && atr > 0.0) {
+      if (action == SignalAction.BUY_LONG) {
+        currentPrice - (atr * config.atrSlMultiplier)
+      } else {
+        currentPrice + (atr * config.atrSlMultiplier)
+      }
     } else {
-      currentPrice * (1.0 + (config.stopLossPercent / 100.0))
+      if (action == SignalAction.BUY_LONG) {
+        currentPrice * (1.0 - (config.stopLossPercent / 100.0))
+      } else {
+        currentPrice * (1.0 + (config.stopLossPercent / 100.0))
+      }
     }
 
-    val tp = if (action == SignalAction.BUY_LONG) {
-      currentPrice * (1.0 + (config.takeProfitPercent / 100.0))
+    // Расчет Take-Profit с поддержкой волатильного ATR
+    val tp = if (config.useAtrSlTp && atr > 0.0) {
+      if (action == SignalAction.BUY_LONG) {
+        currentPrice + (atr * config.atrTpMultiplier)
+      } else {
+        currentPrice - (atr * config.atrTpMultiplier)
+      }
     } else {
-      currentPrice * (1.0 - (config.takeProfitPercent / 100.0))
+      if (action == SignalAction.BUY_LONG) {
+        currentPrice * (1.0 + (config.takeProfitPercent / 100.0))
+      } else {
+        currentPrice * (1.0 - (config.takeProfitPercent / 100.0))
+      }
     }
 
     return SignalData(
@@ -168,6 +198,62 @@ class TradingStrategyService(
       recommendedStopLoss = sl,
       recommendedTakeProfit = tp
     )
+  }
+
+  private fun calculateEmaSeries(prices: List<Double>, period: Int): List<Double> {
+    if (prices.isEmpty()) return emptyList()
+    if (prices.size < period) {
+      var runningSum = 0.0
+      return prices.mapIndexed { idx, p ->
+        runningSum += p
+        runningSum / (idx + 1)
+      }
+    }
+    val result = ArrayList<Double>(prices.size)
+    val k = 2.0 / (period + 1.0)
+    var initialSum = 0.0
+    for (i in 0 until period) {
+      initialSum += prices[i]
+      result.add(initialSum / (i + 1))
+    }
+    var currentEma = initialSum / period
+    for (i in period until prices.size) {
+      currentEma = (prices[i] * k) + (currentEma * (1.0 - k))
+      result.add(currentEma)
+    }
+    return result
+  }
+
+  fun calculateAtr(klines: List<List<Double>>, period: Int = 14): Double {
+    if (klines.isEmpty()) return 0.0
+    if (klines.size == 1) {
+      val high = klines[0][2]
+      val low = klines[0][3]
+      return max(high - low, 0.0)
+    }
+
+    val trList = ArrayList<Double>(klines.size)
+    for (i in klines.indices) {
+      val high = klines[i][2]
+      val low = klines[i][3]
+      if (i == 0) {
+        trList.add(max(high - low, 0.0))
+      } else {
+        val prevClose = klines[i - 1][4]
+        val tr = max(high - low, max(kotlin.math.abs(high - prevClose), kotlin.math.abs(low - prevClose)))
+        trList.add(tr)
+      }
+    }
+
+    if (trList.size <= period) {
+      return trList.average()
+    }
+
+    var atr = trList.take(period).average()
+    for (i in period until trList.size) {
+      atr = (atr * (period - 1) + trList[i]) / period
+    }
+    return atr
   }
 
   private fun calculateEma(prices: List<Double>, period: Int): Double {

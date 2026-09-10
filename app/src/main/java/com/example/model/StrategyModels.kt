@@ -18,6 +18,7 @@ data class IndicatorValues(
   val bbUpper: Double,
   val bbMiddle: Double,
   val bbLower: Double,
+  val atr: Double = 0.0,
 ) {
   val isVolumeAboveAvg: Boolean get() = currentVolume > avgVolume
   val isEmaBullish: Boolean get() = emaFast > emaSlow
@@ -36,12 +37,31 @@ data class SignalData(
   val timestamp: Long = System.currentTimeMillis(),
 )
 
+data class PairScanResult(
+  val pair: TradingPair,
+  val ticker: TickerData,
+  val signal: SignalData
+)
+
 data class StrategyRiskConfig(
   val interval: String = "5m",
   val stopLossPercent: Double = 2.0,
   val takeProfitPercent: Double = 4.0,
   val minScoreThreshold: Int = 70,
   val maxDepositRiskPercent: Double = 25.0,
+  val useAtrSlTp: Boolean = true,
+  val atrPeriod: Int = 14,
+  val atrSlMultiplier: Double = 1.5,
+  val atrTpMultiplier: Double = 3.0,
+  val trailingEnabled: Boolean = false,
+  val trailingActivationPercent: Double = 1.0,
+  val trailingStepPercent: Double = 0.5,
+  val maxConsecutiveLosses: Int = 3,
+  val dailyLossLimitPercent: Double = 5.0,
+  val maxSpreadPercent: Double = 0.15,
+  val scannerEnabled: Boolean = false,
+  val scannerTopN: Int = 20,
+  val scannerIntervalSeconds: Int = 60,
 )
 
 data class TradeRecord(
@@ -51,7 +71,7 @@ data class TradeRecord(
   val entryPrice: Double,
   val quantity: Double,
   val usdtAmount: Double,
-  val stopLossPrice: Double,
+  var stopLossPrice: Double,
   val takeProfitPrice: Double,
   val score: Int,
   val entryTime: Long,
@@ -61,4 +81,8 @@ data class TradeRecord(
   var realizedPnlPercent: Double? = null,
   var status: String = "OPEN",
   var exitReason: String? = null,
+  var entryFeeUsdt: Double = 0.0,
+  var exitFeeUsdt: Double = 0.0,
+  var peakPrice: Double = 0.0,
+  var trailingActive: Boolean = false,
 )

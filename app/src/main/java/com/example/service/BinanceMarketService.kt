@@ -1,12 +1,15 @@
 package com.example.service
 
+import com.example.model.BookTicker
 import com.example.model.Candle
 import com.example.model.OpenOrder
+import com.example.model.TickerData
 import com.example.model.TradingPair
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 import javax.crypto.Mac
@@ -224,12 +227,40 @@ class BinanceMarketService(
     }
   }
 
-  suspend fun fetchCandles(symbol: String, interval: String, limit: Int = 150): List<Candle> = withContext(Dispatchers.IO) {
+  suspend fun fetchCandles(
+    symbol: String,
+    interval: String,
+    limit: Int = 150,
+    startTime: Long? = null,
+    endTime: Long? = null
+  ): List<Candle> = withContext(Dispatchers.IO) {
     val cleanSymbol = symbol.uppercase().trim()
     val cleanInterval = interval.trim()
-    val url = "$TESTNET_BASE_URL/api/v3/klines?symbol=$cleanSymbol&interval=$cleanInterval&limit=$limit"
+    val safeLimit = limit.coerceIn(1, 1000)
+
+    val queryParams = StringBuilder("symbol=$cleanSymbol&interval=$cleanInterval&limit=$safeLimit")
+    if (startTime != null && startTime > 0L) {
+      queryParams.append("&startTime=$startTime")
+    }
+    if (endTime != null && endTime > 0L) {
+      queryParams.append("&endTime=$endTime")
+    }
+
+    // Сначала пробуем запросить с Testnet, при отсутствии истории — резервный запрос с публичного API Binance
+    val testnetUrl = "$TESTNET_BASE_URL/api/v3/klines?$queryParams"
+    var candles = executeKlineRequest(testnetUrl)
+
+    if (candles.isEmpty()) {
+      val mainnetUrl = "https://api.binance.com/api/v3/klines?$queryParams"
+      candles = executeKlineRequest(mainnetUrl)
+    }
+
+    candles
+  }
+
+  private fun executeKlineRequest(url: String): List<Candle> {
     val req = Request.Builder().url(url).get().build()
-    try {
+    return try {
       client.newCall(req).execute().use { res ->
         val body = res.body?.string().orEmpty()
         if (res.isSuccessful) {
@@ -257,6 +288,71 @@ class BinanceMarketService(
       }
     } catch (_: Exception) {
       emptyList()
+    }
+  }
+
+  suspend fun get24hrTickers(): List<TickerData> = withContext(Dispatchers.IO) {
+    val request = Request.Builder()
+      .url("$TESTNET_BASE_URL/api/v3/ticker/24hr")
+      .get()
+      .build()
+
+    try {
+      client.newCall(request).execute().use { response ->
+        val body = response.body?.string().orEmpty()
+        if (response.isSuccessful) {
+          val array = JSONArray(body)
+          val list = mutableListOf<TickerData>()
+          for (i in 0 until array.length()) {
+            val item = array.getJSONObject(i)
+            val sym = item.optString("symbol")
+            if (sym.endsWith("USDT", ignoreCase = true)) {
+              list.add(
+                TickerData(
+                  symbol = sym,
+                  lastPrice = item.optString("lastPrice", "0").toDoubleOrNull() ?: 0.0,
+                  priceChangePercent = item.optString("priceChangePercent", "0").toDoubleOrNull() ?: 0.0,
+                  highPrice = item.optString("highPrice", "0").toDoubleOrNull() ?: 0.0,
+                  lowPrice = item.optString("lowPrice", "0").toDoubleOrNull() ?: 0.0,
+                  volume = item.optString("volume", "0").toDoubleOrNull() ?: 0.0,
+                  quoteVolume = item.optString("quoteVolume", "0").toDoubleOrNull() ?: 0.0,
+                )
+              )
+            }
+          }
+          list
+        } else {
+          emptyList()
+        }
+      }
+    } catch (_: Exception) {
+      emptyList()
+    }
+  }
+
+  suspend fun getBookTicker(symbol: String): BookTicker? = withContext(Dispatchers.IO) {
+    val cleanSym = symbol.uppercase().trim()
+    val request = Request.Builder()
+      .url("$TESTNET_BASE_URL/api/v3/ticker/bookTicker?symbol=$cleanSym")
+      .get()
+      .build()
+
+    try {
+      client.newCall(request).execute().use { response ->
+        val body = response.body?.string().orEmpty()
+        if (response.isSuccessful) {
+          val obj = JSONObject(body)
+          BookTicker(
+            symbol = obj.optString("symbol", cleanSym),
+            bidPrice = obj.optString("bidPrice", "0").toDoubleOrNull() ?: 0.0,
+            askPrice = obj.optString("askPrice", "0").toDoubleOrNull() ?: 0.0
+          )
+        } else {
+          null
+        }
+      }
+    } catch (_: Exception) {
+      null
     }
   }
 }

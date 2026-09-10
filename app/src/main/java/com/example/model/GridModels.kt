@@ -30,15 +30,17 @@ data class GridLevel(
 data class GridConfig(
   val symbol: String = "BTCUSDT",
   val direction: GridDirection = GridDirection.LONG,
-  val rangePercent: Double = 5.0, // ±5% от текущей цены
+  val rangePercent: Double = 4.0, // ±4% от текущей цены
   val lowerBound: Double = 0.0,
   val upperBound: Double = 0.0,
-  val levelCount: Int = 8, // от 3 до 20
+  val levelCount: Int = 8, // от 3 до 50
+  val buySellRatio: Float = 0.5f, // 0.1f..0.9f, 0.5f = 50% BUY / 50% SELL
   val isAutoCapitalPerLevel: Boolean = true,
   val capitalPercentPerLevel: Double = 12.5, // 100 / 8
   val totalInvestmentUsdt: Double = 100.0,
   val trailingTriggerPercent: Double = 3.0, // по умолчанию 3%
   val trailingOffsetPercent: Double = 6.0,  // по умолчанию 6%
+  val tradingInterval: String = "15m" // таймфрейм, зафиксированный при старте
 ) {
   val stepSizePrice: Double
     get() = if (levelCount > 1 && upperBound > lowerBound) (upperBound - lowerBound) / (levelCount - 1) else 0.0
@@ -68,4 +70,7 @@ data class GridBotState(
   val lastRecalculationTimestamp: Long = 0L,
   val lastFlashTrigger: Long = 0L,
   val errorMessage: String? = null
-)
+) {
+  val reservedInOrdersUsdt: Double
+    get() = levels.filter { it.status == GridLevelStatus.PENDING_BUY && it.orderId != null }.sumOf { it.price * it.quantity }
+}

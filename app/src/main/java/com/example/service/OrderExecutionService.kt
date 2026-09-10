@@ -140,13 +140,42 @@ class OrderExecutionService(
     }
   }
 
-  fun closePosition(symbol: String, exitPrice: Double, reason: String) {
-    val pos = _openPositions.remove(symbol)
+  fun updatePeakPrice(
+    symbol: String,
+    peakPrice: Double,
+    newStopLoss: Double? = null,
+    trailingActive: Boolean? = null
+  ) {
+    val key = symbol.uppercase().trim()
+    val pos = _openPositions[key] ?: return
+    if (peakPrice > pos.peakPrice) {
+      pos.peakPrice = peakPrice
+    }
+    if (newStopLoss != null && newStopLoss > pos.stopLossPrice) {
+      pos.stopLossPrice = newStopLoss
+    }
+    if (trailingActive != null) {
+      pos.trailingActive = trailingActive
+    }
+  }
+
+  fun closePosition(
+    symbol: String,
+    exitPrice: Double,
+    reason: String,
+    exitFeeUsdt: Double = 0.0,
+    netPnlUsdt: Double? = null
+  ) {
+    val pos = _openPositions.remove(symbol.uppercase().trim()) ?: _openPositions.remove(symbol)
     if (pos != null) {
       pos.exitPrice = exitPrice
       pos.exitTime = System.currentTimeMillis()
-      pos.realizedPnlUsdt = (exitPrice - pos.entryPrice) * pos.quantity
-      pos.realizedPnlPercent = ((exitPrice - pos.entryPrice) / pos.entryPrice) * 100.0
+      pos.exitFeeUsdt = exitFeeUsdt
+      val grossPnl = (exitPrice - pos.entryPrice) * pos.quantity
+      val finalNetPnl = netPnlUsdt ?: (grossPnl - (pos.entryFeeUsdt + exitFeeUsdt))
+      pos.realizedPnlUsdt = finalNetPnl
+      val investedAmount = (pos.entryPrice * pos.quantity).coerceAtLeast(0.0001)
+      pos.realizedPnlPercent = (finalNetPnl / investedAmount) * 100.0
       pos.status = "CLOSED"
       pos.exitReason = reason
     }

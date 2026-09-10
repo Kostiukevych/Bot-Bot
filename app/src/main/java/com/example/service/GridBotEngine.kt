@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.update
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 class GridBotEngine(private val context: Context) {
 
@@ -143,9 +144,13 @@ class GridBotEngine(private val context: Context) {
         upperBound = effectiveUpper
       )
 
-      // Рассчитываем N уровней цены равномерно между lowerBound и upperBound
-      val n = finalConfig.levelCount
-      val priceStep = (effectiveUpper - effectiveLower) / (n - 1)
+      // Рассчитываем уровни цены с учетом соотношения BUY / SELL уровней (buySellRatio)
+      // В нейтральном положении 50/50: половина BUY под текущей ценой, половина SELL над текущей ценой
+      val n = finalConfig.levelCount.coerceIn(3, 50)
+      val ratio = finalConfig.buySellRatio.coerceIn(0.1f, 0.9f)
+      val buyCount = (n * ratio).roundToInt().coerceIn(1, n - 1)
+      val sellCount = (n - buyCount).coerceAtLeast(1)
+
       val capitalPerLevel = if (finalConfig.isAutoCapitalPerLevel) {
         finalConfig.totalInvestmentUsdt / n
       } else {
@@ -153,26 +158,43 @@ class GridBotEngine(private val context: Context) {
       }
 
       val levels = mutableListOf<GridLevel>()
-      for (i in 0 until n) {
-        val p = effectiveLower + i * priceStep
+
+      // 1. BUY уровни (зеленые, ниже текущей цены)
+      val buyStep = (curPrice - effectiveLower) / buyCount
+      for (i in 0 until buyCount) {
+        val p = effectiveLower + i * buyStep
         val rawQty = capitalPerLevel / p
         val qty = roundQty(rawQty, pair.stepSize, pair.minQty)
-        val side = if (finalConfig.direction == GridDirection.LONG) {
-          if (p < curPrice) "BUY" else "SELL"
-        } else {
-          if (p > curPrice) "SELL" else "BUY"
-        }
-        val status = if (side == "BUY") GridLevelStatus.PENDING_BUY else GridLevelStatus.PENDING_SELL
-
         levels.add(
           GridLevel(
             index = i,
             price = roundPrice(p),
-            side = side,
+            side = "BUY",
             quantity = qty,
-            status = status
+            status = GridLevelStatus.PENDING_BUY
           )
         )
+      }
+
+      // 2. SELL уровни (красные, выше текущей цены)
+      val sellStep = (effectiveUpper - curPrice) / sellCount
+      for (j in 0 until sellCount) {
+        val p = curPrice + (j + 1) * sellStep
+        val rawQty = capitalPerLevel / p
+        val qty = roundQty(rawQty, pair.stepSize, pair.minQty)
+        levels.add(
+          GridLevel(
+            index = buyCount + j,
+            price = roundPrice(p),
+            side = "SELL",
+            quantity = qty,
+            status = GridLevelStatus.PENDING_SELL
+          )
+        )
+      }
+
+      val sortedLevels = levels.sortedBy { it.price }.mapIndexed { idx, lvl ->
+        lvl.copy(index = idx)
       }
 
       // Инициализируем peakPrice
@@ -184,17 +206,20 @@ class GridBotEngine(private val context: Context) {
           isActive = true,
           config = finalConfig,
           peakPrice = initialPeak,
-          levels = levels,
+          levels = sortedLevels,
           errorMessage = null,
           totalProfitUsdt = 0.0,
           completedGrids = 0
         )
       }
 
-      addLog("🚀 Активация сетки ${finalConfig.direction.name} по $symbol: диапазон [${formatPrice(effectiveLower)} - ${formatPrice(effectiveUpper)}], $n уровней, капитал: ${finalConfig.totalInvestmentUsdt} USDT", isHighlight = true)
+      addLog("🚀 Активация сетки ${finalConfig.direction.name} по $symbol: диапазон [${formatPrice(effectiveLower)} - ${formatPrice(effectiveUpper)}], $n уровней (BUY: $buyCount, SELL: $sellCount), капитал: ${finalConfig.totalInvestmentUsdt} USDT", isHighlight = true)
 
       // Выставление начальных лимитных ордеров
       placeInitialOrders(creds.apiKey, creds.secretKey, pair, curPrice, finalConfig.direction)
+
+      // Обновление баланса после выставления ордеров
+      refreshBalanceAsync()
 
       // Запуск циклического мониторинга исполнения ордеров
       startMonitoringLoop(creds.apiKey, creds.secretKey, pair)
@@ -372,6 +397,7 @@ class GridBotEngine(private val context: Context) {
           activeOrderCount = activeCount
         )
       }
+      refreshBalanceAsync()
     }
   }
 
@@ -538,11 +564,21 @@ class GridBotEngine(private val context: Context) {
         )
       }
 
+      refreshBalanceAsync()
+
       if (marketClose) {
         addLog("🛑 Сетка остановлена и позиции закрыты по рынку", isHighlight = true)
       } else {
         addLog("🛑 Сетка остановлена пользователем — открытые ордера отменены, купленный актив сохранён", isHighlight = true)
       }
+    }
+  }
+
+  fun refreshBalanceAsync() {
+    engineScope.launch {
+      try {
+        com.example.MyApplication.instance.botEngine.refreshBalance()
+      } catch (_: Exception) {}
     }
   }
 

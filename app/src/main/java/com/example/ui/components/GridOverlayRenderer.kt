@@ -20,6 +20,7 @@ object GridOverlayRenderer {
   fun drawGridOverlay(
     drawScope: DrawScope,
     gridState: GridBotState,
+    currentPrice: Double = 0.0,
     chartWidth: Float,
     chartHeight: Float,
     priceScaleWidthPx: Float,
@@ -45,70 +46,99 @@ object GridOverlayRenderer {
       // 2. Линии верхней и нижней границы (Drag-маркеры)
       val hasCustomBounds = config.upperBound > 0.0 && config.lowerBound > 0.0
       if (hasCustomBounds) {
-        val upY = priceToY(config.upperBound)
-        val lowY = priceToY(config.lowerBound)
-
         val boundDash = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f)
 
-        // Верхняя граница
-        if (config.upperBound in displayMin..displayMax) {
-          drawLine(
-            color = HudNeonPink,
-            start = Offset(0f, upY),
-            end = Offset(chartWidth, upY),
-            strokeWidth = 2f,
-            pathEffect = boundDash
-          )
-          // Маркер перетаскивания (Drag Handle)
-          drawCircle(
-            color = HudNeonPink,
-            radius = 6f,
-            center = Offset(24f, upY)
-          )
-          drawCircle(
-            color = Color.White,
-            radius = 3f,
-            center = Offset(24f, upY)
-          )
-          // Бейдж
-          val label = "▲ ВЕРХ СЕТКИ: ${formatPrice(config.upperBound)}"
-          drawIntoCanvas { canvas ->
-            canvas.nativeCanvas.drawText(label, 36f, upY - 4f, gridPaint.apply { color = android.graphics.Color.argb(255, 255, 42, 133) })
-          }
+        // Верхняя граница (Upper Bound)
+        val isUpperAbove = config.upperBound > displayMax
+        val isUpperBelow = config.upperBound < displayMin
+        val rawUpY = priceToY(config.upperBound)
+        val upY = when {
+          isUpperAbove -> 16f
+          isUpperBelow -> chartHeight - 24f
+          else -> rawUpY
         }
 
-        // Нижняя граница
-        if (config.lowerBound in displayMin..displayMax) {
-          drawLine(
-            color = HudGreen,
-            start = Offset(0f, lowY),
-            end = Offset(chartWidth, lowY),
-            strokeWidth = 2f,
-            pathEffect = boundDash
+        drawLine(
+          color = if (isUpperAbove) HudNeonPink else HudNeonPink.copy(alpha = 0.9f),
+          start = Offset(0f, upY),
+          end = Offset(chartWidth, upY),
+          strokeWidth = if (isUpperAbove) 2.5f else 2f,
+          pathEffect = boundDash
+        )
+        // Маркер перетаскивания (Drag Handle)
+        drawCircle(
+          color = HudNeonPink,
+          radius = if (isUpperAbove) 8f else 6f,
+          center = Offset(24f, upY)
+        )
+        drawCircle(
+          color = Color.White,
+          radius = 3.5f,
+          center = Offset(24f, upY)
+        )
+        // Бейдж
+        val upLabel = if (isUpperAbove) {
+          "▲ ВЕРХ [ВЫШЕ ЭКРАНА]: ${formatPrice(config.upperBound)} ↓ ТЯНИТЕ"
+        } else {
+          "▲ ВЕРХ СЕТКИ: ${formatPrice(config.upperBound)}"
+        }
+        drawIntoCanvas { canvas ->
+          canvas.nativeCanvas.drawText(
+            upLabel,
+            38f,
+            if (isUpperAbove) upY + 13f else upY - 4f,
+            gridPaint.apply { color = android.graphics.Color.argb(255, 255, 42, 133) }
           )
-          // Маркер перетаскивания (Drag Handle)
-          drawCircle(
-            color = HudGreen,
-            radius = 6f,
-            center = Offset(24f, lowY)
+        }
+
+        // Нижняя граница (Lower Bound)
+        val isLowerBelow = config.lowerBound < displayMin
+        val isLowerAbove = config.lowerBound > displayMax
+        val rawLowY = priceToY(config.lowerBound)
+        val lowY = when {
+          isLowerBelow -> chartHeight - 16f
+          isLowerAbove -> 24f
+          else -> rawLowY
+        }
+
+        drawLine(
+          color = if (isLowerBelow) HudGreen else HudGreen.copy(alpha = 0.9f),
+          start = Offset(0f, lowY),
+          end = Offset(chartWidth, lowY),
+          strokeWidth = if (isLowerBelow) 2.5f else 2f,
+          pathEffect = boundDash
+        )
+        // Маркер перетаскивания (Drag Handle)
+        drawCircle(
+          color = HudGreen,
+          radius = if (isLowerBelow) 8f else 6f,
+          center = Offset(24f, lowY)
+        )
+        drawCircle(
+          color = Color.White,
+          radius = 3.5f,
+          center = Offset(24f, lowY)
+        )
+        // Бейдж
+        val lowLabel = if (isLowerBelow) {
+          "▼ НИЗ [НИЖЕ ЭКРАНА]: ${formatPrice(config.lowerBound)} ↑ ТЯНИТЕ"
+        } else {
+          "▼ НИЗ СЕТКИ: ${formatPrice(config.lowerBound)}"
+        }
+        drawIntoCanvas { canvas ->
+          canvas.nativeCanvas.drawText(
+            lowLabel,
+            38f,
+            if (isLowerBelow) lowY - 5f else lowY + 12f,
+            gridPaint.apply { color = android.graphics.Color.argb(255, 0, 230, 118) }
           )
-          drawCircle(
-            color = Color.White,
-            radius = 3f,
-            center = Offset(24f, lowY)
-          )
-          // Бейдж
-          val label = "▼ НИЗ СЕТКИ: ${formatPrice(config.lowerBound)}"
-          drawIntoCanvas { canvas ->
-            canvas.nativeCanvas.drawText(label, 36f, lowY + 12f, gridPaint.apply { color = android.graphics.Color.argb(255, 0, 230, 118) })
-          }
         }
       }
 
-      // 3. Активные уровни сетки (если сетка запущена)
-      if (gridState.isActive && gridState.levels.isNotEmpty()) {
-        val levelDash = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
+      // 3. Уровни сетки (Активные или превью при настройке)
+      val levelDash = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
 
+      if (gridState.isActive && gridState.levels.isNotEmpty()) {
         for (level in gridState.levels) {
           val p = level.price
           if (p in displayMin..displayMax) {
@@ -162,6 +192,62 @@ object GridOverlayRenderer {
                     GridLevelStatus.CANCELED -> android.graphics.Color.argb(255, 126, 155, 184)
                   }
                 }
+              )
+            }
+          }
+        }
+      } else if (!gridState.isActive && hasCustomBounds && config.upperBound > config.lowerBound) {
+        // Превью уровней при настройке сетки
+        val n = config.levelCount.coerceIn(3, 50)
+        val ratio = config.buySellRatio.coerceIn(0.1f, 0.9f)
+        val buyCount = (n * ratio).toInt().coerceIn(1, n - 1)
+        val sellCount = (n - buyCount).coerceAtLeast(1)
+
+        val curP = if (currentPrice in config.lowerBound..config.upperBound) currentPrice else (config.lowerBound + config.upperBound) / 2.0
+        val buyStep = (curP - config.lowerBound) / buyCount
+        val sellStep = (config.upperBound - curP) / sellCount
+
+        // Превью BUY уровней (зеленые)
+        for (i in 0 until buyCount) {
+          val p = config.lowerBound + i * buyStep
+          if (p in displayMin..displayMax) {
+            val y = priceToY(p)
+            drawLine(
+              color = HudGreen.copy(alpha = 0.5f),
+              start = Offset(0f, y),
+              end = Offset(chartWidth, y),
+              strokeWidth = 1f,
+              pathEffect = levelDash
+            )
+            drawIntoCanvas { canvas ->
+              canvas.nativeCanvas.drawText(
+                "BUY #${i + 1}",
+                chartWidth - 48f,
+                y + 3.5f,
+                badgePaint.apply { color = android.graphics.Color.argb(180, 0, 230, 118) }
+              )
+            }
+          }
+        }
+
+        // Превью SELL уровней (красные)
+        for (j in 0 until sellCount) {
+          val p = curP + (j + 1) * sellStep
+          if (p in displayMin..displayMax) {
+            val y = priceToY(p)
+            drawLine(
+              color = HudNeonPink.copy(alpha = 0.5f),
+              start = Offset(0f, y),
+              end = Offset(chartWidth, y),
+              strokeWidth = 1f,
+              pathEffect = levelDash
+            )
+            drawIntoCanvas { canvas ->
+              canvas.nativeCanvas.drawText(
+                "SELL #${buyCount + j + 1}",
+                chartWidth - 52f,
+                y + 3.5f,
+                badgePaint.apply { color = android.graphics.Color.argb(180, 255, 42, 133) }
               )
             }
           }

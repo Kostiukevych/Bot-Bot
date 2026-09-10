@@ -44,6 +44,7 @@ import androidx.core.content.ContextCompat
 import com.example.MyApplication
 import com.example.model.*
 import com.example.service.*
+import com.example.ui.components.*
 import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -73,6 +74,8 @@ fun DashboardScreen(
   var showPairDialog by remember { mutableStateOf(false) }
   var showEmergencyDialog by remember { mutableStateOf(false) }
   var showBatteryOptDialog by remember { mutableStateOf(false) }
+  var showBacktestSheet by remember { mutableStateOf(false) }
+  var dashboardBacktestResult by remember { mutableStateOf<BacktestResult?>(null) }
 
   // Открытые лимитные ордера на бирже (загружаются отдельно через marketService)
   var openOrders by remember { mutableStateOf<List<OpenOrder>>(emptyList()) }
@@ -185,7 +188,8 @@ fun DashboardScreen(
         DashboardTopBar(
           onOpenSettings = onOpenSettings,
           onOpenHistory = onOpenHistory,
-          onOpenChart = onOpenChart
+          onOpenChart = onOpenChart,
+          onOpenBacktest = { showBacktestSheet = true }
         )
 
         // Предупреждение об оптимизации батареи (если не отключена)
@@ -229,6 +233,42 @@ fun DashboardScreen(
             .padding(horizontal = 14.dp, vertical = 8.dp),
           verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
+          // КАРТОЧКА РЕЗУЛЬТАТОВ БЭКТЕСТА СИГНАЛЬНОГО БОТА (ЕСЛИ ЗАПУЩЕН)
+          if (dashboardBacktestResult != null) {
+            item {
+              HudCard(
+                title = "РЕЗУЛЬТАТЫ БЭКТЕСТА (СИГНАЛЬНЫЙ БОТ)",
+                icon = Icons.Outlined.Science,
+                modifier = Modifier.fillMaxWidth().testTag("dashboard_backtest_card")
+              ) {
+                BacktestStatsCard(
+                  result = dashboardBacktestResult!!,
+                  onReset = { dashboardBacktestResult = null }
+                )
+                Spacer(Modifier.height(10.dp))
+                EquityCurveChart(equity = dashboardBacktestResult!!.equityCurve)
+                Spacer(Modifier.height(10.dp))
+                Button(
+                  onClick = onOpenChart,
+                  colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B0C2E)),
+                  border = androidx.compose.foundation.BorderStroke(1.dp, HudNeonPurple),
+                  shape = CutCornerShape(4.dp),
+                  modifier = Modifier.fillMaxWidth().testTag("view_on_chart_button")
+                ) {
+                  Icon(Icons.Outlined.ShowChart, contentDescription = null, tint = HudNeonPurple, modifier = Modifier.size(16.dp))
+                  Spacer(Modifier.width(6.dp))
+                  Text(
+                    "ОТКРЫТЬ НА ИНТЕРАКТИВНОМ ГРАФИКЕ",
+                    color = Color.White,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp
+                  )
+                }
+              }
+            }
+          }
+
           // 1. КАРТОЧКА ОБЩЕГО БАЛАНСА С PNL ЗА СЕССИЮ (ЧАСТЬ B п.3)
           item {
             val sessionPnl = botState.sessionRealizedPnlUsdt
@@ -441,6 +481,37 @@ fun DashboardScreen(
                 ) {
                   Text("SL: ${"%.2f".format(Locale.US, openPos.stopLossPrice)} USDT", color = HudRed, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                   Text("TP: ${"%.2f".format(Locale.US, openPos.takeProfitPrice)} USDT", color = HudGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                }
+
+                Spacer(Modifier.height(6.dp))
+
+                // Трейлинг и комиссии
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF071220), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  val trailingText = when {
+                    openPos.trailingActive -> "ТРЕЙЛИНГ: АКТИВЕН (пик: ${"%.2f".format(Locale.US, openPos.peakPrice)})"
+                    botState.strategyConfig.trailingEnabled -> "ТРЕЙЛИНГ: ОЖИДАЕТ (+${botState.strategyConfig.trailingActivationPercent}%)"
+                    else -> "ТРЕЙЛИНГ: ВЫКЛ"
+                  }
+                  Text(
+                    trailingText,
+                    color = if (openPos.trailingActive) HudGreen else HudTextMuted,
+                    fontSize = 9.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                  )
+                  Text(
+                    "Вход fee: ${"%.3f".format(Locale.US, openPos.entryFeeUsdt)} USDT",
+                    color = HudTextMuted,
+                    fontSize = 9.sp,
+                    fontFamily = FontFamily.Monospace
+                  )
                 }
               }
             }
@@ -719,6 +790,57 @@ fun DashboardScreen(
                   Text("BOLLINGER (20,2)", color = HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                   Text("L: %.1f | M: %.1f | U: %.1f".format(Locale.US, ind.bbLower, ind.bbMiddle, ind.bbUpper), color = HudPeach, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 }
+
+                Spacer(Modifier.height(8.dp))
+
+                // ATR (14) & SL/TP Режим
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF071220), RoundedCornerShape(6.dp))
+                    .border(1.dp, Color(0x2200D4FF), RoundedCornerShape(6.dp))
+                    .padding(8.dp),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Column {
+                    Text("ATR (${strategyConfig.atrPeriod}) ВОЛАТИЛЬНОСТЬ", color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Text("${"%.2f".format(Locale.US, ind.atr)} USDT", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                  }
+                  Text(
+                    if (strategyConfig.useAtrSlTp) "SL/TP: ATR (x${strategyConfig.atrSlMultiplier} / x${strategyConfig.atrTpMultiplier})" else "SL/TP: % ФИКСИРОВАННЫЙ",
+                    color = if (strategyConfig.useAtrSlTp) HudCyan else HudTextMuted,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                  )
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                // Фильтр спреда
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF071220), RoundedCornerShape(6.dp))
+                    .border(1.dp, Color(0x2200D4FF), RoundedCornerShape(6.dp))
+                    .padding(8.dp),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Shield, contentDescription = null, tint = HudCyan, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("ФИЛЬТР СПРЕДА (MAX)", color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                  }
+                  Text(
+                    "${strategyConfig.maxSpreadPercent}%",
+                    color = HudPeach,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                  )
+                }
               }
             }
           }
@@ -851,11 +973,63 @@ fun DashboardScreen(
             HudCard(
               title = "УПРАВЛЕНИЕ АЛГО-БОТОМ",
               icon = Icons.Outlined.SmartToy,
-              borderColor = if (isBotActive) HudCyan else Color(0x66FF5252),
+              borderColor = if (botState.isCircuitBreakerTripped) HudRed else if (isBotActive) HudCyan else Color(0x66FF5252),
               flashTriggerId = flashEvent?.id,
               flashType = flashEvent?.type ?: TradeFlashType.NONE,
               modifier = Modifier.fillMaxWidth().testTag("bot_control_card")
             ) {
+              // Аварийный баннер Circuit Breaker
+              if (botState.isCircuitBreakerTripped) {
+                Box(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0x33FF1744), RoundedCornerShape(8.dp))
+                    .border(1.5.dp, HudRed, RoundedCornerShape(8.dp))
+                    .padding(12.dp)
+                    .testTag("circuit_breaker_banner")
+                ) {
+                  Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                      Icon(Icons.Filled.Warning, contentDescription = null, tint = HudRed, modifier = Modifier.size(20.dp))
+                      Spacer(Modifier.width(8.dp))
+                      Text(
+                        "CIRCUIT BREAKER АКТИВИРОВАН",
+                        color = HudRed,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                      )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                      botState.circuitBreakerReason ?: "Торговля заблокирована защитой депозита.",
+                      color = Color.White,
+                      fontSize = 11.sp,
+                      fontFamily = FontFamily.Monospace,
+                      lineHeight = 15.sp
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                      onClick = { botEngine.resetCircuitBreaker() },
+                      colors = ButtonDefaults.buttonColors(containerColor = HudRed),
+                      shape = RoundedCornerShape(6.dp),
+                      modifier = Modifier.fillMaxWidth().testTag("reset_circuit_breaker_button")
+                    ) {
+                      Icon(Icons.Filled.Refresh, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                      Spacer(Modifier.width(6.dp))
+                      Text(
+                        "СБРОСИТЬ И ПРОДОЛЖИТЬ",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                      )
+                    }
+                  }
+                }
+                Spacer(Modifier.height(10.dp))
+              }
+
               Box(
                 modifier = Modifier
                   .fillMaxWidth()
@@ -919,6 +1093,79 @@ fun DashboardScreen(
                       checkedTrackColor = Color(0x4400D4FF),
                       uncheckedThumbColor = HudRed,
                       uncheckedTrackColor = Color(0x44FF5252)
+                    )
+                  )
+                }
+              }
+
+              Spacer(Modifier.height(10.dp))
+
+              // Переключатель мультипарного авто-сканера
+              val scannerEnabled = botState.strategyConfig.scannerEnabled
+              val nextScanSec = botState.nextScanInSeconds
+              Box(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .background(Color(0xFF0D2340), RoundedCornerShape(8.dp))
+                  .border(1.dp, if (scannerEnabled) HudCyan else Color(0x3300D4FF), RoundedCornerShape(8.dp))
+                  .padding(10.dp)
+              ) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                      Icons.Outlined.Radar,
+                      contentDescription = null,
+                      tint = if (scannerEnabled) HudCyan else HudTextMuted,
+                      modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                      Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                          "МУЛЬТИПАРНЫЙ СКАНЕР",
+                          color = Color.White,
+                          fontWeight = FontWeight.Bold,
+                          fontSize = 12.sp,
+                          fontFamily = FontFamily.Monospace
+                        )
+                        if (scannerEnabled && nextScanSec != null) {
+                          Spacer(Modifier.width(6.dp))
+                          Box(
+                            modifier = Modifier
+                              .background(Color(0x3300D4FF), RoundedCornerShape(4.dp))
+                              .padding(horizontal = 5.dp, vertical = 2.dp)
+                          ) {
+                            Text(
+                              "${nextScanSec}s",
+                              color = HudCyan,
+                              fontSize = 10.sp,
+                              fontWeight = FontWeight.Bold,
+                              fontFamily = FontFamily.Monospace
+                            )
+                          }
+                        }
+                      }
+                      Text(
+                        if (scannerEnabled) "Авто-ранжирование топ-${botState.strategyConfig.scannerTopN} пар по объему и сигналу" else "Выключен (торговля одной выбранной парой)",
+                        color = HudTextMuted,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                      )
+                    }
+                  }
+
+                  Switch(
+                    checked = scannerEnabled,
+                    onCheckedChange = { botEngine.setScannerEnabled(it) },
+                    colors = SwitchDefaults.colors(
+                      checkedThumbColor = HudCyan,
+                      checkedTrackColor = Color(0x4400D4FF),
+                      uncheckedThumbColor = HudTextMuted,
+                      uncheckedTrackColor = Color(0x22FFFFFF)
                     )
                   )
                 }
@@ -1116,23 +1363,85 @@ fun DashboardScreen(
         Text("ВЫБОР ТОРГОВОЙ ПАРЫ (USDT)", color = HudCyan, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 14.sp)
       },
       text = {
-        LazyColumn(modifier = Modifier.fillMaxWidth().height(260.dp)) {
-          items(pairs) { pair ->
-            Row(
-              modifier = Modifier
-                .fillMaxWidth()
-                .clickable {
-                  botEngine.selectPair(pair)
-                  showPairDialog = false
+        Column(modifier = Modifier.fillMaxWidth()) {
+          val scanResults = botState.lastScanResults
+          if (scanResults.isNotEmpty()) {
+            Text(
+              "ТОП-РЕЙТИНГ СКАНЕРА (${scanResults.size} пар):",
+              color = HudPeach,
+              fontFamily = FontFamily.Monospace,
+              fontWeight = FontWeight.Bold,
+              fontSize = 11.sp,
+              modifier = Modifier.padding(bottom = 6.dp)
+            )
+            LazyColumn(modifier = Modifier.fillMaxWidth().height(140.dp)) {
+              items(scanResults) { res ->
+                val isBuy = res.signal.action == SignalAction.BUY_LONG
+                val isSell = res.signal.action == SignalAction.SELL_SPOT
+                val badgeColor = if (isBuy) HudGreen else if (isSell) HudRed else HudTextMuted
+                val badgeText = if (isBuy) "BUY" else if (isSell) "SELL" else "HOLD"
+
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                      botEngine.selectPair(res.pair)
+                      showPairDialog = false
+                    }
+                    .padding(vertical = 6.dp, horizontal = 4.dp),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Column {
+                    Text(res.pair.symbol, color = Color.White, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text("Vol: ${"%.1f".format(Locale.US, res.ticker.quoteVolume / 1_000_000.0)}M $", color = HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                  }
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                      modifier = Modifier
+                        .background(badgeColor.copy(alpha = 0.2f), RoundedCornerShape(4.dp))
+                        .border(1.dp, badgeColor, RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                      Text(badgeText, color = badgeColor, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text("${res.signal.score}%", color = HudCyan, fontWeight = FontWeight.Bold, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                  }
                 }
-                .padding(vertical = 10.dp, horizontal = 6.dp),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.CenterVertically
-            ) {
-              Text(pair.symbol, color = Color.White, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-              Text("Min: ${pair.minNotional} USDT", color = HudTextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                HorizontalDivider(color = Color(0x1A00D4FF))
+              }
             }
-            HorizontalDivider(color = Color(0x1A00D4FF))
+
+            Spacer(Modifier.height(8.dp))
+            Text(
+              "ВСЕ ДОСТУПНЫЕ ПАРЫ:",
+              color = HudTextMuted,
+              fontFamily = FontFamily.Monospace,
+              fontWeight = FontWeight.Bold,
+              fontSize = 11.sp,
+              modifier = Modifier.padding(bottom = 4.dp)
+            )
+          }
+
+          LazyColumn(modifier = Modifier.fillMaxWidth().height(if (scanResults.isNotEmpty()) 150.dp else 260.dp)) {
+            items(pairs) { pair ->
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clickable {
+                    botEngine.selectPair(pair)
+                    showPairDialog = false
+                  }
+                  .padding(vertical = 8.dp, horizontal = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Text(pair.symbol, color = Color.White, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text("Min: ${pair.minNotional} USDT", color = HudTextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+              }
+              HorizontalDivider(color = Color(0x1A00D4FF))
+            }
           }
         }
       },
@@ -1163,6 +1472,20 @@ fun DashboardScreen(
       }
     )
   }
+
+  // Боттом-шит бэктеста для сигнального бота
+  if (showBacktestSheet) {
+    val sym = botState.selectedPair?.symbol ?: "BTCUSDT"
+    BacktestBottomSheet(
+      symbol = sym,
+      interval = "1h",
+      botType = BacktestBotType.SIGNAL_BOT,
+      onDismiss = { showBacktestSheet = false },
+      onBacktestFinished = { res ->
+        dashboardBacktestResult = res
+      }
+    )
+  }
 }
 
 @Composable
@@ -1170,6 +1493,7 @@ fun DashboardTopBar(
   onOpenSettings: () -> Unit,
   onOpenHistory: () -> Unit = {},
   onOpenChart: () -> Unit = {},
+  onOpenBacktest: () -> Unit = {},
 ) {
   Row(
     modifier = Modifier
@@ -1206,6 +1530,12 @@ fun DashboardTopBar(
     }
 
     Row {
+      IconButton(
+        onClick = onOpenBacktest,
+        modifier = Modifier.size(34.dp).testTag("backtest_nav_button")
+      ) {
+        Icon(Icons.Outlined.Science, contentDescription = "Бэктест", tint = HudNeonPurple)
+      }
       IconButton(
         onClick = onOpenChart,
         modifier = Modifier.size(34.dp).testTag("chart_nav_button")

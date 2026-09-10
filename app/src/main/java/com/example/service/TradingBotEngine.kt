@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlin.math.max
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -60,19 +61,46 @@ data class BotEngineState(
     stopLossPercent = 2.0,
     takeProfitPercent = 4.0,
     minScoreThreshold = 55, // Сбалансированный порог по умолчанию, чтобы сигналы были активны
-    maxDepositRiskPercent = 25.0
+    maxDepositRiskPercent = 25.0,
+    useAtrSlTp = true,
+    atrPeriod = 14,
+    atrSlMultiplier = 1.5,
+    atrTpMultiplier = 3.0,
+    trailingEnabled = false,
+    trailingActivationPercent = 1.0,
+    trailingStepPercent = 0.5,
+    maxConsecutiveLosses = 3,
+    dailyLossLimitPercent = 5.0,
+    maxSpreadPercent = 0.15,
+    scannerEnabled = false,
+    scannerTopN = 20,
+    scannerIntervalSeconds = 60
   ),
   val positionAmountUsdt: Double = 50.0,
   val positionPercent: Float = 25f,
+  val consecutiveLosses: Int = 0,
+  val dailySessionStartBalance: Double? = null,
+  val dailySessionStartDay: Int? = null,
+  val isCircuitBreakerTripped: Boolean = false,
+  val circuitBreakerCooldownUntil: Long? = null,
+  val circuitBreakerReason: String? = null,
+  val lastScanResults: List<PairScanResult> = emptyList(),
+  val lastScanTimestamp: Long? = null,
+  val nextScanInSeconds: Int? = null,
   val lastError: String? = null,
   val lastSuccessEvent: TradeFlashEvent? = null
 )
 
 class TradingBotEngine(private val context: Context) {
 
+  companion object {
+    const val TAKER_FEE_PERCENT = 0.1
+  }
+
   private val engineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
   private var analysisJob: Job? = null
   private var tickerJob: Job? = null
+  private var scannerJob: Job? = null
 
   val storageService = SecureStorageService(context)
   val authService = BinanceAuthService()
@@ -80,6 +108,9 @@ class TradingBotEngine(private val context: Context) {
   val wsService = BinanceWebSocketService()
   val strategyService = TradingStrategyService()
   val orderService = OrderExecutionService()
+  val scannerService = MarketScannerService(strategyService)
+
+  private var cachedAllPairs: List<TradingPair> = emptyList()
 
   private val _stateFlow = MutableStateFlow(BotEngineState())
   val stateFlow: StateFlow<BotEngineState> = _stateFlow.asStateFlow()
@@ -98,6 +129,18 @@ class TradingBotEngine(private val context: Context) {
     addLog("Параметры стратегии обновлены: порог=${config.minScoreThreshold}%, SL=${config.stopLossPercent}%, TP=${config.takeProfitPercent}%", LogType.INFO)
   }
 
+  fun setScannerEnabled(enabled: Boolean) {
+    val newConfig = _stateFlow.value.strategyConfig.copy(scannerEnabled = enabled)
+    updateStrategyConfig(newConfig)
+    if (enabled && _stateFlow.value.isBotActive) {
+      startScannerLoop()
+    } else {
+      scannerJob?.cancel()
+      scannerJob = null
+      _stateFlow.update { it.copy(nextScanInSeconds = null) }
+    }
+  }
+
   fun updatePositionAmount(amount: Double, percent: Float) {
     _stateFlow.update { it.copy(positionAmountUsdt = amount, positionPercent = percent) }
   }
@@ -112,6 +155,7 @@ class TradingBotEngine(private val context: Context) {
   suspend fun initMarketData() {
     try {
       val pairs = marketService.getTradingPairs()
+      cachedAllPairs = pairs
       val defaultPair = pairs.firstOrNull { it.symbol == "BTCUSDT" } ?: pairs.firstOrNull()
       if (defaultPair != null && _stateFlow.value.selectedPair == null) {
         selectPair(defaultPair)
@@ -158,26 +202,99 @@ class TradingBotEngine(private val context: Context) {
 
   fun start() {
     if (_stateFlow.value.isBotActive) return
+    val currentDay = Calendar.getInstance().get(Calendar.DAY_OF_YEAR)
+    val curBal = (_stateFlow.value.freeUsdt ?: 0.0) + (_stateFlow.value.lockedUsdt ?: 0.0)
+    val startBal = if (_stateFlow.value.dailySessionStartBalance == null || _stateFlow.value.dailySessionStartDay != currentDay) {
+      if (curBal > 0.0) curBal else (_stateFlow.value.totalUsdt ?: 1000.0)
+    } else {
+      _stateFlow.value.dailySessionStartBalance
+    }
+
     _stateFlow.update {
       it.copy(
         isBotActive = true,
-        botStatus = if (it.openPositions.isNotEmpty()) BotStatus.LONG else BotStatus.ANALYSIS
+        botStatus = if (it.openPositions.isNotEmpty()) BotStatus.LONG else BotStatus.ANALYSIS,
+        dailySessionStartBalance = startBal,
+        dailySessionStartDay = currentDay
       )
     }
-    addLog("🚀 Торговый бот запущен. Анализ рынка в фоне активирован.", LogType.INFO)
+    addLog("🚀 Торговый бот запущен. Анализ рынка в фоне активирован. Дневной баланс отсчета: ${"%.2f".format(Locale.US, startBal)} USDT", LogType.INFO)
     startAnalysisLoop()
+    if (_stateFlow.value.strategyConfig.scannerEnabled) {
+      startScannerLoop()
+    }
   }
 
   fun stop() {
     _stateFlow.update {
       it.copy(
         isBotActive = false,
-        botStatus = BotStatus.STOPPED
+        botStatus = BotStatus.STOPPED,
+        nextScanInSeconds = null
       )
     }
     analysisJob?.cancel()
     analysisJob = null
+    scannerJob?.cancel()
+    scannerJob = null
     addLog("🛑 Торговый бот остановлен пользователем.", LogType.INFO)
+  }
+
+  private fun startScannerLoop() {
+    scannerJob?.cancel()
+    scannerJob = engineScope.launch {
+      while (isActive && _stateFlow.value.isBotActive && _stateFlow.value.strategyConfig.scannerEnabled) {
+        runScanCycle()
+        val intervalSec = _stateFlow.value.strategyConfig.scannerIntervalSeconds.coerceAtLeast(10)
+        for (secLeft in intervalSec downTo 1) {
+          if (!isActive || !_stateFlow.value.isBotActive || !_stateFlow.value.strategyConfig.scannerEnabled) break
+          _stateFlow.update { it.copy(nextScanInSeconds = secLeft) }
+          delay(1000L)
+        }
+      }
+      _stateFlow.update { it.copy(nextScanInSeconds = null) }
+    }
+  }
+
+  private suspend fun runScanCycle() {
+    if (orderService.openPositions.isNotEmpty()) {
+      // Позиция уже открыта, дожидаемся её закрытия по TP/SL как обычно, сканер не переключает пару
+      return
+    }
+
+    val allPairs = if (cachedAllPairs.isNotEmpty()) cachedAllPairs else {
+      try {
+        val p = marketService.getTradingPairs()
+        cachedAllPairs = p
+        p
+      } catch (e: Exception) {
+        addLog("Ошибка получения списка пар для сканера: ${e.message}", LogType.ORDER_ERROR)
+        emptyList()
+      }
+    }
+
+    if (allPairs.isEmpty()) return
+
+    val config = _stateFlow.value.strategyConfig
+    try {
+      val results = scannerService.scanTopPairs(marketService, allPairs, config)
+      _stateFlow.update {
+        it.copy(
+          lastScanResults = results,
+          lastScanTimestamp = System.currentTimeMillis()
+        )
+      }
+
+      val best = results.firstOrNull { it.signal.action != SignalAction.HOLD && it.signal.score >= config.minScoreThreshold }
+      if (best != null && best.pair.symbol != _stateFlow.value.selectedPair?.symbol) {
+        selectPair(best.pair)
+        addLog("🔍 Сканер: переключение на ${best.pair.symbol}, score ${best.signal.score}%", LogType.SIGNAL)
+      }
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      addLog("Ошибка цикла сканера: ${e.message}", LogType.ORDER_ERROR)
+    }
   }
 
   private fun startAnalysisLoop() {
@@ -198,6 +315,9 @@ class TradingBotEngine(private val context: Context) {
 
   private suspend fun analyzeAndExecuteCycle() {
     val state = _stateFlow.value
+    // Защита Circuit Breaker: полная блокировка торговых операций до ручного сброса
+    if (state.isCircuitBreakerTripped) return
+
     val pair = state.selectedPair ?: return
     val sym = pair.symbol
     val config = state.strategyConfig
@@ -210,19 +330,51 @@ class TradingBotEngine(private val context: Context) {
     val sig = strategyService.evaluate(sym, curPrice, klines, config)
     _stateFlow.update { it.copy(currentSignal = sig) }
 
-    // 1. Проверка Take-Profit / Stop-Loss по открытой позиции для текущей пары
+    // 1. Проверка Трейлинг-стопа и Take-Profit / Stop-Loss по открытой позиции
     val openPos = orderService.openPositions[sym]
     if (openPos != null) {
-      if (curPrice >= openPos.takeProfitPrice) {
-        val profitUsdt = (curPrice - openPos.entryPrice) * openPos.quantity
-        val profitPct = ((curPrice - openPos.entryPrice) / openPos.entryPrice) * 100.0
-        val reason = "Take-Profit достигнут (+${"%.2f".format(Locale.US, profitPct)}%)"
-        executeClosePosition(sym, curPrice, reason, isProfit = true, profitUsdt = profitUsdt, profitPct = profitPct)
-      } else if (curPrice <= openPos.stopLossPrice) {
-        val lossUsdt = (curPrice - openPos.entryPrice) * openPos.quantity
-        val lossPct = ((curPrice - openPos.entryPrice) / openPos.entryPrice) * 100.0
-        val reason = "Stop-Loss достигнут (${"%.2f".format(Locale.US, lossPct)}%)"
-        executeClosePosition(sym, curPrice, reason, isProfit = false, profitUsdt = lossUsdt, profitPct = lossPct)
+      // Трейлинг-стоп для сигнального бота
+      if (config.trailingEnabled) {
+        if (curPrice > openPos.peakPrice) {
+          val newPeak = curPrice
+          val profitFromEntryPct = ((newPeak - openPos.entryPrice) / openPos.entryPrice) * 100.0
+          val isTrailingNowActive = openPos.trailingActive || (profitFromEntryPct >= config.trailingActivationPercent)
+          var newSL = openPos.stopLossPrice
+          if (isTrailingNowActive) {
+            val calculatedSL = newPeak * (1.0 - (config.trailingStepPercent / 100.0))
+            if (calculatedSL > openPos.stopLossPrice) {
+              newSL = calculatedSL
+              addLog("⚡ Трейлинг-стоп $sym: пик ${"%.2f".format(Locale.US, newPeak)}, SL подтянут до ${"%.2f".format(Locale.US, newSL)}", LogType.INFO)
+            }
+          }
+          orderService.updatePeakPrice(sym, newPeak, newSL, isTrailingNowActive)
+          syncPositionsAndHistory()
+        }
+      }
+
+      val activePos = orderService.openPositions[sym] ?: openPos
+      if (curPrice >= activePos.takeProfitPrice) {
+        val grossUsdt = (curPrice - activePos.entryPrice) * activePos.quantity
+        val exitFeeUsdt = (curPrice * activePos.quantity) * TAKER_FEE_PERCENT / 100.0
+        val netProfitUsdt = grossUsdt - (activePos.entryFeeUsdt + exitFeeUsdt)
+        val netPct = (netProfitUsdt / (activePos.entryPrice * activePos.quantity).coerceAtLeast(0.0001)) * 100.0
+        val reason = if (activePos.trailingActive) {
+          "Take-Profit / Трейлинг (+${"%.2f".format(Locale.US, netPct)}%)"
+        } else {
+          "Take-Profit достигнут (+${"%.2f".format(Locale.US, netPct)}%)"
+        }
+        executeClosePosition(sym, curPrice, reason, skipSpreadCheck = true)
+      } else if (curPrice <= activePos.stopLossPrice) {
+        val grossUsdt = (curPrice - activePos.entryPrice) * activePos.quantity
+        val exitFeeUsdt = (curPrice * activePos.quantity) * TAKER_FEE_PERCENT / 100.0
+        val netLossUsdt = grossUsdt - (activePos.entryFeeUsdt + exitFeeUsdt)
+        val netPct = (netLossUsdt / (activePos.entryPrice * activePos.quantity).coerceAtLeast(0.0001)) * 100.0
+        val reason = if (activePos.trailingActive) {
+          "Трейлинг Stop-Loss сработал (${"%.2f".format(Locale.US, netPct)}%)"
+        } else {
+          "Stop-Loss достигнут (${"%.2f".format(Locale.US, netPct)}%)"
+        }
+        executeClosePosition(sym, curPrice, reason, skipSpreadCheck = true)
       }
       return
     }
@@ -242,6 +394,13 @@ class TradingBotEngine(private val context: Context) {
     }
 
     if (sig.action == SignalAction.BUY_LONG && !orderService.hasOpenPosition(sym)) {
+      // Фильтр спреда перед открытием новой позиции (BUY)
+      val book = marketService.getBookTicker(sym)
+      if (book != null && book.spreadPercent > config.maxSpreadPercent) {
+        addLog("⚠️ Спред ${"%.3f".format(Locale.US, book.spreadPercent)}% > лимита ${config.maxSpreadPercent}%, ордер отменён (защита от проскальзывания)", LogType.ORDER_ERROR)
+        return
+      }
+
       addLog("🎯 Сигнал LONG найден, score: ${sig.score}%, открываю сделку...", LogType.SIGNAL)
       _stateFlow.update { it.copy(botStatus = BotStatus.LONG) }
 
@@ -262,6 +421,7 @@ class TradingBotEngine(private val context: Context) {
       if (res.isSuccess) {
         val fillPrice = if (res.price > 0) res.price else sig.currentPrice
         val fillQty = if (res.executedQty > 0) res.executedQty else targetQty
+        val entryFee = amount * TAKER_FEE_PERCENT / 100.0
         val rec = TradeRecord(
           id = res.orderId ?: System.currentTimeMillis().toString(),
           symbol = sym,
@@ -272,12 +432,15 @@ class TradingBotEngine(private val context: Context) {
           stopLossPrice = sig.recommendedStopLoss,
           takeProfitPrice = sig.recommendedTakeProfit,
           score = sig.score,
-          entryTime = System.currentTimeMillis()
+          entryTime = System.currentTimeMillis(),
+          entryFeeUsdt = entryFee,
+          peakPrice = max(fillPrice, sig.currentPrice),
+          trailingActive = false
         )
         orderService.recordTrade(rec)
         syncPositionsAndHistory()
         addLog(
-          "✅ Сделка открыта: BUY $sym ${"%.5f".format(Locale.US, fillQty)} по ${"%.2f".format(Locale.US, fillPrice)}",
+          "✅ Сделка открыта: BUY $sym ${"%.5f".format(Locale.US, fillQty)} по ${"%.2f".format(Locale.US, fillPrice)} (комиссия входа: ${"%.4f".format(Locale.US, entryFee)} USDT)",
           LogType.ORDER_SUCCESS
         )
         // Триггер анимации вспышки рамки при успешном открытии сделки
@@ -296,19 +459,12 @@ class TradingBotEngine(private val context: Context) {
       }
     } else if (sig.action == SignalAction.SELL_SPOT && orderService.hasOpenPosition(sym)) {
       addLog("🎯 Сигнал SELL Spot (score: ${sig.score}%), фиксация позиции...", LogType.SIGNAL)
-      val pos = orderService.openPositions[sym]
-      if (pos != null) {
-        val profitUsdt = (curPrice - pos.entryPrice) * pos.quantity
-        val profitPct = ((curPrice - pos.entryPrice) / pos.entryPrice) * 100.0
-        executeClosePosition(
-          sym,
-          curPrice,
-          "Сигнал SELL Spot (score: ${sig.score}%)",
-          isProfit = profitUsdt >= 0,
-          profitUsdt = profitUsdt,
-          profitPct = profitPct
-        )
-      }
+      executeClosePosition(
+        sym = sym,
+        exitPrice = curPrice,
+        reason = "Сигнал SELL Spot (score: ${sig.score}%)",
+        skipSpreadCheck = false
+      )
     }
   }
 
@@ -316,11 +472,20 @@ class TradingBotEngine(private val context: Context) {
     sym: String,
     exitPrice: Double,
     reason: String,
-    isProfit: Boolean,
-    profitUsdt: Double,
-    profitPct: Double
+    skipSpreadCheck: Boolean = false
   ) {
     val pos = orderService.openPositions[sym] ?: return
+    val config = _stateFlow.value.strategyConfig
+
+    // Проверка спреда только если не закрытие по TP/SL
+    if (!skipSpreadCheck) {
+      val book = marketService.getBookTicker(sym)
+      if (book != null && book.spreadPercent > config.maxSpreadPercent) {
+        addLog("⚠️ Спред ${"%.3f".format(Locale.US, book.spreadPercent)}% > лимита ${config.maxSpreadPercent}%, ордер отменён (защита от проскальзывания)", LogType.ORDER_ERROR)
+        return
+      }
+    }
+
     val creds = storageService.getCredentials()
 
     if (creds != null && creds.apiKey.isNotBlank()) {
@@ -339,24 +504,47 @@ class TradingBotEngine(private val context: Context) {
       }
     }
 
-    orderService.closePosition(sym, exitPrice, reason)
+    val exitFeeUsdt = (exitPrice * pos.quantity) * TAKER_FEE_PERCENT / 100.0
+    val grossProfitUsdt = (exitPrice - pos.entryPrice) * pos.quantity
+    val netProfitUsdt = grossProfitUsdt - (pos.entryFeeUsdt + exitFeeUsdt)
+    val invested = (pos.entryPrice * pos.quantity).coerceAtLeast(0.0001)
+    val netProfitPct = (netProfitUsdt / invested) * 100.0
+    val isProfit = netProfitUsdt >= 0
+
+    orderService.closePosition(
+      symbol = sym,
+      exitPrice = exitPrice,
+      reason = reason,
+      exitFeeUsdt = exitFeeUsdt,
+      netPnlUsdt = netProfitUsdt
+    )
     syncPositionsAndHistory()
 
-    val pnlSign = if (profitUsdt >= 0) "+" else ""
-    val pnlPctStr = "${pnlSign}${"%.2f".format(Locale.US, profitPct)}%"
-    val pnlUsdtStr = "${pnlSign}${"%.2f".format(Locale.US, profitUsdt)} USDT"
+    val pnlSign = if (netProfitUsdt >= 0) "+" else ""
+    val pnlPctStr = "${pnlSign}${"%.2f".format(Locale.US, netProfitPct)}%"
+    val pnlUsdtStr = "${pnlSign}${"%.2f".format(Locale.US, netProfitUsdt)} USDT"
+    val totalFeeStr = "комиссия: ${"%.3f".format(Locale.US, pos.entryFeeUsdt + exitFeeUsdt)} USDT"
 
     val flashType = if (isProfit) TradeFlashType.PROFIT else TradeFlashType.LOSS
 
     if (isProfit) {
-      addLog("✅ $reason: закрыто с прибылью $pnlPctStr ($pnlUsdtStr)", LogType.PROFIT)
+      addLog("✅ $reason: чистая прибыль $pnlPctStr ($pnlUsdtStr, $totalFeeStr)", LogType.PROFIT)
     } else {
-      addLog("🛑 $reason: закрыто с убытком $pnlPctStr ($pnlUsdtStr)", LogType.LOSS)
+      addLog("🛑 $reason: чистый убыток $pnlPctStr ($pnlUsdtStr, $totalFeeStr)", LogType.LOSS)
     }
+
+    val updatedConsecutiveLosses = if (netProfitUsdt < 0) {
+      _stateFlow.value.consecutiveLosses + 1
+    } else {
+      0
+    }
+
+    val updatedSessionPnl = _stateFlow.value.sessionRealizedPnlUsdt + netProfitUsdt
 
     _stateFlow.update {
       it.copy(
-        sessionRealizedPnlUsdt = it.sessionRealizedPnlUsdt + profitUsdt,
+        sessionRealizedPnlUsdt = updatedSessionPnl,
+        consecutiveLosses = updatedConsecutiveLosses,
         botStatus = BotStatus.ANALYSIS,
         lastSuccessEvent = TradeFlashEvent(
           id = "${pos.id}_closed_${System.currentTimeMillis()}",
@@ -366,11 +554,57 @@ class TradingBotEngine(private val context: Context) {
       )
     }
     refreshBalance()
+
+    // Проверка условий Circuit Breaker
+    checkCircuitBreaker(updatedConsecutiveLosses)
+  }
+
+  private fun checkCircuitBreaker(consecutiveLosses: Int) {
+    val state = _stateFlow.value
+    val config = state.strategyConfig
+    val startBal = state.dailySessionStartBalance
+
+    val currentBal = (state.totalUsdt ?: state.freeUsdt ?: startBal ?: 1000.0)
+    val dailyLossPct = if (startBal != null && startBal > 0.0) {
+      ((startBal - currentBal) / startBal) * 100.0
+    } else {
+      0.0
+    }
+
+    val trippedByLosses = consecutiveLosses >= config.maxConsecutiveLosses
+    val trippedByDailyLimit = startBal != null && dailyLossPct >= config.dailyLossLimitPercent
+
+    if (trippedByLosses || trippedByDailyLimit) {
+      val reasonMsg = if (trippedByLosses) {
+        "🛑 Circuit Breaker: бот остановлен после $consecutiveLosses убыточных сделок подряд (лимит: ${config.maxConsecutiveLosses})"
+      } else {
+        "🛑 Circuit Breaker: достигнут дневной лимит просадки ${"%.1f".format(Locale.US, dailyLossPct)}% (порог: ${config.dailyLossLimitPercent}%)"
+      }
+
+      stop()
+      _stateFlow.update {
+        it.copy(
+          isCircuitBreakerTripped = true,
+          circuitBreakerReason = reasonMsg
+        )
+      }
+      addLog(reasonMsg, LogType.ORDER_ERROR)
+    }
+  }
+
+  fun resetCircuitBreaker() {
+    _stateFlow.update {
+      it.copy(
+        isCircuitBreakerTripped = false,
+        consecutiveLosses = 0,
+        circuitBreakerReason = null
+      )
+    }
+    addLog("🛡️ Circuit Breaker сброшен вручную. Торговый цикл разблокирован.", LogType.INFO)
   }
 
   fun emergencyCloseAll() {
     engineScope.launch {
-      val creds = storageService.getCredentials()
       val curPositions = orderService.openPositions.values.toList()
       if (curPositions.isEmpty()) {
         addLog("Экстренное закрытие: нет открытых позиций", LogType.INFO)
@@ -379,9 +613,7 @@ class TradingBotEngine(private val context: Context) {
 
       for (pos in curPositions) {
         val curPrice = _stateFlow.value.tickerData?.lastPrice ?: pos.entryPrice
-        val profitUsdt = (curPrice - pos.entryPrice) * pos.quantity
-        val profitPct = ((curPrice - pos.entryPrice) / pos.entryPrice) * 100.0
-        executeClosePosition(pos.symbol, curPrice, "ЭКСТРЕННОЕ РУЧНОЕ ЗАКРЫТИЕ", profitUsdt >= 0, profitUsdt, profitPct)
+        executeClosePosition(pos.symbol, curPrice, "ЭКСТРЕННОЕ РУЧНОЕ ЗАКРЫТИЕ")
       }
     }
   }

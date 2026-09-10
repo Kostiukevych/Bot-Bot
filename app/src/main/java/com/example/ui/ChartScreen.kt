@@ -7,6 +7,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -18,17 +20,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
@@ -40,9 +47,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.MyApplication
-import com.example.model.Candle
-import com.example.model.GridBotState
-import com.example.model.TradingPair
+import com.example.model.*
+import com.example.ui.components.BacktestBottomSheet
+import com.example.ui.components.BacktestStatsCard
+import com.example.ui.components.EquityCurveChart
 import com.example.ui.components.GridBotConfigPanel
 import com.example.ui.components.GridOverlayRenderer
 import com.example.ui.components.HudCard
@@ -53,6 +61,14 @@ import java.util.*
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+
+/**
+ * Режим визуализации графика (Свечи / Линия).
+ */
+enum class ChartVisualType {
+  CANDLES,
+  LINE
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -75,6 +91,17 @@ fun ChartScreen(
   }
   var selectedInterval by remember { mutableStateOf("15m") }
 
+  // Сохраняемый масштаб и скролл графика (rememberSaveable) (Requirement 3)
+  var zoomFactor by rememberSaveable { mutableFloatStateOf(1.0f) }
+  var scrollOffset by rememberSaveable { mutableFloatStateOf(0f) }
+  var chartVisualType by rememberSaveable { mutableStateOf(ChartVisualType.CANDLES) }
+
+  // Сброс масштаба и скролла ТОЛЬКО при смене пары или интервала (не при каждой новой свече!)
+  LaunchedEffect(selectedSymbol, selectedInterval) {
+    scrollOffset = 0f
+    zoomFactor = 1.0f
+  }
+
   // Список доступных торговых пар (переиспользуется из BinanceMarketService)
   var pairs by remember { mutableStateOf<List<TradingPair>>(emptyList()) }
   var showPairDialog by remember { mutableStateOf(false) }
@@ -93,6 +120,9 @@ fun ChartScreen(
   val gridBotEngine = app.gridBotEngine
   val gridState by gridBotEngine.stateFlow.collectAsState()
   var isGridBotMode by remember { mutableStateOf(false) }
+
+  var showBacktestSheet by remember { mutableStateOf(false) }
+  var backtestResult by remember { mutableStateOf<BacktestResult?>(null) }
 
   // Синхронизация символа с GridBotEngine
   LaunchedEffect(selectedSymbol) {
@@ -117,10 +147,6 @@ fun ChartScreen(
   var chartError by remember { mutableStateOf<String?>(null) }
 
   // При КАЖДОЙ смене пары ИЛИ таймфрейма:
-  // 1. Полностью очищаем буфер свечей из памяти
-  // 2. Отменяем предыдущую WebSocket-подписку на kline
-  // 3. Запрашиваем ровно 150 свечей REST под новую пару + таймфрейм
-  // 4. Подписываемся на новый живой WebSocket kline
   LaunchedEffect(selectedSymbol, selectedInterval) {
     candles = emptyList()
     isLoadingCandles = true
@@ -141,7 +167,7 @@ fun ChartScreen(
     wsService.subscribeToKline(selectedSymbol, selectedInterval)
   }
 
-  // Обновление ТОЛЬКО текущего активного буфера свечей из WebSocket
+  // Обновление буфера свечей из WebSocket без сброса scrollOffset!
   LaunchedEffect(selectedSymbol, selectedInterval) {
     wsService.klineFlow.collect { update ->
       if (update.symbol.equals(selectedSymbol, ignoreCase = true) &&
@@ -152,12 +178,9 @@ fun ChartScreen(
           val lastIdx = current.lastIndex
           val last = current[lastIdx]
           if (last.openTime == update.candle.openTime) {
-            // Обновляем текущую свечу в реальном времени
             current[lastIdx] = update.candle
           } else if (update.candle.openTime > last.openTime) {
-            // Новая свеча: добавляем в конец
             current.add(update.candle)
-            // Буфер остаётся ровно до 150 свечей — сдвигающееся окно
             while (current.size > 150) {
               current.removeAt(0)
             }
@@ -189,13 +212,13 @@ fun ChartScreen(
 
   Scaffold(
     modifier = modifier.fillMaxSize(),
-    containerColor = HudNavyDark
-  ) { innerPadding ->
+    containerColor = Color.Transparent
+  ) { paddingValues ->
     Box(
       modifier = Modifier
         .fillMaxSize()
         .background(backgroundBrush)
-        .padding(innerPadding)
+        .padding(paddingValues)
     ) {
       // HUD Сетка на фоне
       Canvas(modifier = Modifier.fillMaxSize()) {
@@ -219,24 +242,20 @@ fun ChartScreen(
       }
 
       Column(modifier = Modifier.fillMaxSize()) {
-        // ВЕРХНИЙ ТУЛБАР: Кнопка Назад + Заголовок + Бейдж Live
+        // ВЕРХНИЙ ТУЛБАР: Кнопка Назад + Заголовок + Бейдж Live / Бэктест
         ChartTopBar(
           selectedSymbol = selectedSymbol,
+          isBacktest = (backtestResult != null),
           onBack = onBackToDashboard
         )
 
-        val chartScrollState = rememberScrollState()
+        val mainScrollState = rememberScrollState()
+
         Column(
-          modifier = if (isGridBotMode) {
-            Modifier
-              .fillMaxSize()
-              .verticalScroll(chartScrollState)
-              .padding(horizontal = 14.dp, vertical = 8.dp)
-          } else {
-            Modifier
-              .fillMaxSize()
-              .padding(horizontal = 14.dp, vertical = 8.dp)
-          }
+          modifier = Modifier
+            .fillMaxSize()
+            .then(if (isGridBotMode) Modifier.verticalScroll(mainScrollState) else Modifier)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
         ) {
           // 1. СЕЛЕКТОР ПАРЫ + ТЕКУЩАЯ ЦЕНА
           val currentPrice = tickerData?.lastPrice ?: 0.0
@@ -251,7 +270,13 @@ fun ChartScreen(
             if (!gridState.isActive && currentPrice > 0.0) {
               if (gridState.config.lowerBound == 0.0 || gridState.config.upperBound == 0.0) {
                 val bounds = gridBotEngine.calculateBoundsFromPercent(gridState.config.rangePercent, currentPrice)
-                gridBotEngine.updateConfig(gridState.config.copy(lowerBound = bounds.first, upperBound = bounds.second))
+                gridBotEngine.updateConfig(
+                  gridState.config.copy(
+                    lowerBound = bounds.first,
+                    upperBound = bounds.second,
+                    tradingInterval = selectedInterval
+                  )
+                )
               }
             }
           }
@@ -259,83 +284,49 @@ fun ChartScreen(
           HudCard(
             title = "ИНСТРУМЕНТ // РЫНОЧНЫЙ ТИКЕР",
             icon = Icons.Outlined.ShowChart,
-            borderColor = HudNeonPurple.copy(alpha = 0.8f),
             modifier = Modifier.fillMaxWidth()
           ) {
-            // Кнопка выбора пары
-            Row(
-              modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF071220), RoundedCornerShape(6.dp))
-                .border(1.dp, HudNeonPink.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
-                .clickable { showPairDialog = true }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.CenterVertically
-            ) {
-              Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                  Icons.Outlined.CurrencyExchange,
-                  contentDescription = null,
-                  tint = HudNeonPink,
-                  modifier = Modifier.size(20.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                  selectedSymbol,
-                  color = Color.White,
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 16.sp,
-                  fontFamily = FontFamily.Monospace
-                )
-              }
-              Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                  "СМЕНИТЬ ПАРУ",
-                  color = HudCyan,
-                  fontSize = 11.sp,
-                  fontFamily = FontFamily.Monospace
-                )
-                Icon(Icons.Filled.ArrowDropDown, contentDescription = null, tint = HudCyan)
-              }
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            // Крупная строка текущей цены
             Row(
               modifier = Modifier.fillMaxWidth(),
               horizontalArrangement = Arrangement.SpaceBetween,
               verticalAlignment = Alignment.CenterVertically
             ) {
-              Column {
+              // Кнопка выбора инструмента (модальное окно поиска)
+              Box(
+                modifier = Modifier
+                  .background(Color(0xFF0C1E36), CutCornerShape(4.dp))
+                  .border(1.dp, HudCyan.copy(alpha = 0.5f), CutCornerShape(4.dp))
+                  .clickable { showPairDialog = true }
+                  .padding(horizontal = 10.dp, vertical = 6.dp)
+                  .testTag("symbol_selector_button")
+              ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  Text(
+                    selectedSymbol,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    fontFamily = FontFamily.Monospace
+                  )
+                  Spacer(Modifier.width(4.dp))
+                  Icon(Icons.Filled.ArrowDropDown, contentDescription = null, tint = HudCyan)
+                }
+              }
+
+              // Отображение живой цены и 24h изменения
+              Column(horizontalAlignment = Alignment.End) {
                 Text(
-                  "ТЕКУЩАЯ ЦЕНА (BINANCE WS)",
-                  color = HudTextMuted,
-                  fontSize = 10.sp,
+                  "$${formatPrice(currentPrice)}",
+                  color = HudCyan,
+                  fontWeight = FontWeight.Bold,
+                  fontSize = 17.sp,
                   fontFamily = FontFamily.Monospace
                 )
                 Text(
-                  text = formatPrice(currentPrice),
-                  color = Color.White,
-                  fontSize = 28.sp,
-                  fontWeight = FontWeight.Bold,
-                  fontFamily = FontFamily.Monospace,
-                  letterSpacing = 1.sp
-                )
-              }
-
-              Box(
-                modifier = Modifier
-                  .background(changeColor.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                  .border(1.2.dp, changeColor, RoundedCornerShape(6.dp))
-                  .padding(horizontal = 10.dp, vertical = 6.dp)
-              ) {
-                Text(
-                  text = "${if (isPositive) "+" else ""}${"%.2f".format(Locale.US, changePct)}%",
+                  "${if (isPositive) "+" else ""}${"%.2f".format(Locale.US, changePct)}%",
                   color = changeColor,
                   fontWeight = FontWeight.Bold,
-                  fontSize = 15.sp,
+                  fontSize = 11.sp,
                   fontFamily = FontFamily.Monospace
                 )
               }
@@ -343,155 +334,155 @@ fun ChartScreen(
 
             Spacer(Modifier.height(6.dp))
 
-            // 24h High / 24h Low
+            // Переключатель вкладок: ОБЗОР ГРАФИКА vs GRID BOT СЕТКА
             Row(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-              Text(
-                "24h Max: ${formatPrice(high24h)}",
-                color = HudGreen.copy(alpha = 0.85f),
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace
-              )
-              Text(
-                "24h Min: ${formatPrice(low24h)}",
-                color = HudRed.copy(alpha = 0.85f),
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace
-              )
-            }
-          }
-
-          Spacer(Modifier.height(8.dp))
-
-          // ПЕРЕКЛЮЧАТЕЛЬ РЕЖИМА: СВЕЧНОЙ ГРАФИК vs GRID BOT (СЕТОЧНАЯ ТОРГОВЛЯ)
-          Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .background(Color(0xFF05101E), RoundedCornerShape(8.dp))
-              .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(8.dp))
-              .padding(3.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-          ) {
-            val chartTabBg = if (!isGridBotMode) Brush.linearGradient(listOf(HudNeonBlue, Color(0xFF00527A))) else Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
-            Box(
               modifier = Modifier
-                .weight(1f)
-                .background(chartTabBg, RoundedCornerShape(6.dp))
-                .clickable { isGridBotMode = false }
-                .padding(vertical = 7.dp)
-                .testTag("tab_standard_chart"),
-              contentAlignment = Alignment.Center
+                .fillMaxWidth()
+                .background(Color(0xFF071220), CutCornerShape(4.dp))
+                .border(1.dp, Color(0x3300D4FF), CutCornerShape(4.dp))
+                .padding(3.dp),
+              horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-              Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.CandlestickChart, contentDescription = null, tint = if (!isGridBotMode) Color.White else HudTextMuted, modifier = Modifier.size(15.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(
-                  "СВЕЧНОЙ ГРАФИК",
-                  color = if (!isGridBotMode) Color.White else HudTextMuted,
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 11.sp,
-                  fontFamily = FontFamily.Monospace
-                )
+              // Вкладка "ОБЗОР ГРАФИКА"
+              val isChartActive = !isGridBotMode
+              val chartBg = if (isChartActive) Brush.linearGradient(listOf(HudNeonBlue, Color(0xFF00527A))) else Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
+              Box(
+                modifier = Modifier
+                  .weight(1f)
+                  .background(chartBg, RoundedCornerShape(4.dp))
+                  .clickable { isGridBotMode = false }
+                  .padding(vertical = 6.dp)
+                  .testTag("tab_chart_view"),
+                contentAlignment = Alignment.Center
+              ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  Icon(
+                    Icons.Outlined.CandlestickChart,
+                    contentDescription = null,
+                    tint = if (isChartActive) Color.White else HudTextMuted,
+                    modifier = Modifier.size(15.dp)
+                  )
+                  Spacer(Modifier.width(6.dp))
+                  Text(
+                    "ГРАФИК",
+                    color = if (isChartActive) Color.White else HudTextMuted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace
+                  )
+                }
               }
-            }
 
-            val gridTabBg = if (isGridBotMode) {
-              if (gridState.isActive) Brush.linearGradient(listOf(HudGreen, Color(0xFF005A32))) else Brush.linearGradient(listOf(HudNeonPink, HudNeonPurple))
-            } else {
-              Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
-            }
-            Box(
-              modifier = Modifier
-                .weight(1f)
-                .background(gridTabBg, RoundedCornerShape(6.dp))
-                .clickable { isGridBotMode = true }
-                .padding(vertical = 7.dp)
-                .testTag("tab_grid_bot"),
-              contentAlignment = Alignment.Center
-            ) {
-              Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.GridOn, contentDescription = null, tint = if (isGridBotMode) Color.White else HudTextMuted, modifier = Modifier.size(15.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(
-                  if (gridState.isActive) "GRID BOT [ON]" else "GRID BOT (СЕТКА)",
-                  color = if (isGridBotMode) Color.White else HudTextMuted,
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 11.sp,
-                  fontFamily = FontFamily.Monospace
-                )
+              // Вкладка "GRID BOT"
+              val isGridActive = isGridBotMode
+              val gridBg = if (isGridActive) Brush.linearGradient(listOf(Color(0xFF5A142A), HudNeonPink)) else Brush.linearGradient(listOf(Color.Transparent, Color.Transparent))
+              Box(
+                modifier = Modifier
+                  .weight(1f)
+                  .background(gridBg, RoundedCornerShape(4.dp))
+                  .clickable { isGridBotMode = true }
+                  .padding(vertical = 6.dp)
+                  .testTag("tab_grid_bot"),
+                contentAlignment = Alignment.Center
+              ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  Icon(
+                    Icons.Outlined.GridOn,
+                    contentDescription = null,
+                    tint = if (isGridActive) Color.White else HudTextMuted,
+                    modifier = Modifier.size(15.dp)
+                  )
+                  Spacer(Modifier.width(6.dp))
+                  Text(
+                    if (gridState.isActive) "GRID BOT [ON]" else "GRID BOT",
+                    color = if (isGridActive) Color.White else if (gridState.isActive) HudGreen else HudTextMuted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace
+                  )
+                }
               }
             }
           }
 
-          Spacer(Modifier.height(8.dp))
+          Spacer(Modifier.height(6.dp))
 
-          // 2. ПЕРЕКЛЮЧАТЕЛЬ ТАЙМФРЕЙМА (1m / 5m / 15m / 1h / 4h / 1d)
+          // 2. СЕЛЕКТОР ТАЙМФРЕЙМОВ (КНОПКИ 1m, 5m, 15m, 1h, 4h, 1d)
           Row(
-            modifier = Modifier
-              .fillMaxWidth()
-              .background(Color(0xFF071220), CutCornerShape(topStart = 6.dp, bottomEnd = 6.dp))
-              .border(1.dp, Color(0x3300D4FF), CutCornerShape(topStart = 6.dp, bottomEnd = 6.dp))
-              .padding(4.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(4.dp)
           ) {
             intervals.forEach { interval ->
               val isSelected = interval == selectedInterval
-              val buttonBg = if (isSelected) {
-                Brush.linearGradient(listOf(HudNeonPink, HudNeonPurple))
+              val btnBg = if (isSelected) {
+                Brush.linearGradient(listOf(HudNeonBlue, Color(0xFF004466)))
               } else {
-                Brush.linearGradient(listOf(Color(0xFF0A182C), Color(0xFF0A182C)))
+                Brush.linearGradient(listOf(Color(0xFF0C1E36), Color(0xFF0C1E36)))
               }
-              val borderBrush = if (isSelected) {
-                Brush.linearGradient(listOf(Color.White, HudNeonPink))
-              } else {
-                Brush.linearGradient(listOf(Color(0x2200D4FF), Color(0x2200D4FF)))
-              }
+              val borderColor = if (isSelected) HudCyan else Color(0x2200D4FF)
 
               Box(
                 modifier = Modifier
                   .weight(1f)
-                  .background(buttonBg, CutCornerShape(4.dp))
-                  .border(1.dp, borderBrush, CutCornerShape(4.dp))
+                  .background(btnBg, RoundedCornerShape(4.dp))
+                  .border(1.dp, borderColor, RoundedCornerShape(4.dp))
                   .clickable {
                     if (selectedInterval != interval) {
                       selectedInterval = interval
                     }
                   }
-                  .padding(vertical = 8.dp),
+                  .padding(vertical = 6.dp)
+                  .testTag("timeframe_$interval"),
                 contentAlignment = Alignment.Center
               ) {
                 Text(
-                  text = interval,
+                  interval,
                   color = if (isSelected) Color.White else HudTextMuted,
                   fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                  fontSize = 12.sp,
+                  fontSize = 11.sp,
                   fontFamily = FontFamily.Monospace
                 )
               }
             }
           }
 
-          Spacer(Modifier.height(10.dp))
+          Spacer(Modifier.height(6.dp))
 
           // 3. ОБЛАСТЬ ГРАФИКА СВЕЧЕЙ (CANVAS)
           val chartBoxModifier = if (isGridBotMode) {
             Modifier
               .fillMaxWidth()
-              .height(300.dp)
+              .height(310.dp)
               .background(Color(0xFF071220), CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp))
               .border(1.2.dp, HudNeonBlue.copy(alpha = 0.5f), CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp))
           } else {
             Modifier
               .fillMaxWidth()
               .weight(1f)
+              .defaultMinSize(minHeight = 280.dp)
               .background(Color(0xFF071220), CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp))
               .border(1.2.dp, HudNeonBlue.copy(alpha = 0.5f), CutCornerShape(topStart = 8.dp, bottomEnd = 8.dp))
           }
 
           Box(modifier = chartBoxModifier) {
             when {
+              backtestResult != null -> {
+                CandlestickChart(
+                  candles = backtestResult!!.candles,
+                  currentPrice = currentPrice,
+                  symbol = selectedSymbol,
+                  interval = selectedInterval,
+                  chartVisualType = chartVisualType,
+                  zoomFactor = zoomFactor,
+                  onZoomChange = { zoomFactor = it },
+                  scrollOffset = scrollOffset,
+                  onScrollOffsetChange = { scrollOffset = it },
+                  gridState = if (isGridBotMode) gridState else null,
+                  backtestResult = backtestResult,
+                  modifier = Modifier.fillMaxSize()
+                )
+              }
+
               isLoadingCandles -> {
                 Column(
                   modifier = Modifier.fillMaxSize(),
@@ -555,7 +546,13 @@ fun ChartScreen(
                 CandlestickChart(
                   candles = candles,
                   currentPrice = currentPrice,
+                  symbol = selectedSymbol,
                   interval = selectedInterval,
+                  chartVisualType = chartVisualType,
+                  zoomFactor = zoomFactor,
+                  onZoomChange = { zoomFactor = it },
+                  scrollOffset = scrollOffset,
+                  onScrollOffsetChange = { scrollOffset = it },
                   gridState = if (isGridBotMode) gridState else null,
                   onDragUpperBound = { newUpper ->
                     val cleanUpper = if (newUpper >= 1.0) Math.round(newUpper * 100.0) / 100.0 else Math.round(newUpper * 10000.0) / 10000.0
@@ -571,15 +568,71 @@ fun ChartScreen(
             }
           }
 
+          Spacer(Modifier.height(6.dp))
+
+          // ==========================================
+          // ТУЛБАР ГРАФИКА (Requirement 6)
+          // ==========================================
+          ChartToolbar(
+            chartVisualType = chartVisualType,
+            onChartVisualTypeChange = { chartVisualType = it },
+            onZoomIn = { zoomFactor = (zoomFactor * 1.25f).coerceAtMost(3.5f) },
+            onZoomOut = { zoomFactor = (zoomFactor / 1.25f).coerceAtLeast(0.25f) },
+            onFitToScreen = {
+              zoomFactor = 1.0f
+              scrollOffset = 0f
+            },
+            onOpenBacktest = { showBacktestSheet = true },
+            isBacktestActive = (backtestResult != null),
+            modifier = Modifier.fillMaxWidth()
+          )
+
+          // РЕЗУЛЬТАТЫ БЭКТЕСТА (Карточка статистики + График эквити)
+          if (backtestResult != null) {
+            Spacer(Modifier.height(8.dp))
+            BacktestStatsCard(
+              result = backtestResult!!,
+              onReset = { backtestResult = null }
+            )
+            Spacer(Modifier.height(8.dp))
+            EquityCurveChart(equity = backtestResult!!.equityCurve)
+          }
+
           // 4. ПАНЕЛЬ НАСТРОЙКИ И УПРАВЛЕНИЯ GRID BOT
           if (isGridBotMode) {
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(8.dp))
             GridBotConfigPanel(
               gridBotEngine = gridBotEngine,
               currentPrice = currentPrice,
-              selectedSymbol = selectedSymbol
+              selectedSymbol = selectedSymbol,
+              selectedInterval = selectedInterval
             )
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(20.dp))
+          } else {
+            // Краткая сводка инструмента (24h high/low/volume)
+            Spacer(Modifier.height(8.dp))
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF0A182C), CutCornerShape(4.dp))
+                .border(1.dp, Color(0x2200D4FF), CutCornerShape(4.dp))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Column {
+                Text("24h MAX", color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                Text("$${formatPrice(high24h)}", color = HudGreen, fontSize = 12.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+              }
+              Column {
+                Text("24h MIN", color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                Text("$${formatPrice(low24h)}", color = HudRed, fontSize = 12.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+              }
+              Column(horizontalAlignment = Alignment.End) {
+                Text("24h ОБЪЁМ", color = HudTextMuted, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                Text("${"%.1f".format(Locale.US, tickerData?.volume ?: 0.0)}", color = HudCyan, fontSize = 12.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+              }
+            }
           }
         }
       }
@@ -588,20 +641,18 @@ fun ChartScreen(
 
   // ДИАЛОГ ВЫБОРА ТОРГОВОЙ ПАРЫ С ЖИВЫМ ПОИСКОМ
   if (showPairDialog) {
-    val filteredPairs = remember(pairs, searchQuery) {
-      if (searchQuery.isBlank()) pairs
-      else pairs.filter { it.symbol.contains(searchQuery.trim().uppercase(), ignoreCase = true) }
-    }
-
     AlertDialog(
-      onDismissRequest = { showPairDialog = false },
-      containerColor = Color(0xFF0D2340),
+      onDismissRequest = {
+        showPairDialog = false
+        searchQuery = ""
+      },
+      containerColor = Color(0xFF0A1C30),
       title = {
         Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.Outlined.CurrencyExchange, contentDescription = null, tint = HudNeonPink)
+          Icon(Icons.Outlined.Search, contentDescription = null, tint = HudCyan)
           Spacer(Modifier.width(8.dp))
           Text(
-            "ВЫБОР ПАРЫ (USDT)",
+            "ВЫБОР ТОРГОВОЙ ПАРЫ",
             color = Color.White,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.Bold,
@@ -614,86 +665,298 @@ fun ChartScreen(
           OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
-            placeholder = { Text("Поиск пары (BTC, ETH, SOL...)", color = HudTextMuted, fontSize = 12.sp) },
+            placeholder = { Text("Поиск (например BTC, ETH, SOL)", color = HudTextMuted, fontSize = 12.sp) },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().testTag("pair_search_input"),
             colors = OutlinedTextFieldDefaults.colors(
               focusedTextColor = Color.White,
               unfocusedTextColor = Color.White,
-              focusedBorderColor = HudNeonPink,
+              focusedBorderColor = HudCyan,
               unfocusedBorderColor = Color(0x3300D4FF),
-              focusedContainerColor = Color(0xFF071220),
-              unfocusedContainerColor = Color(0xFF071220)
+              focusedContainerColor = Color(0xFF06101E),
+              unfocusedContainerColor = Color(0xFF06101E)
             )
           )
 
-          Spacer(Modifier.height(8.dp))
+          Spacer(Modifier.height(10.dp))
+
+          val filtered = remember(pairs, searchQuery) {
+            if (searchQuery.isBlank()) pairs
+            else pairs.filter { it.symbol.contains(searchQuery.trim(), ignoreCase = true) }
+          }
 
           LazyColumn(
             modifier = Modifier
               .fillMaxWidth()
               .height(280.dp)
           ) {
-            items(filteredPairs) { pair ->
-              val isCurrent = pair.symbol == selectedSymbol
-              Row(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .background(if (isCurrent) Color(0x33FF2A85) else Color.Transparent)
-                  .clickable {
-                    if (selectedSymbol != pair.symbol) {
-                      selectedSymbol = pair.symbol
-                    }
-                    showPairDialog = false
-                  }
-                  .padding(vertical = 10.dp, horizontal = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-              ) {
-                Text(
-                  pair.symbol,
-                  color = if (isCurrent) HudNeonPink else Color.White,
-                  fontFamily = FontFamily.Monospace,
-                  fontWeight = FontWeight.Bold,
-                  fontSize = 13.sp
-                )
-                Text(
-                  "Мин: ${pair.minNotional} USDT",
-                  color = HudTextMuted,
-                  fontSize = 11.sp,
-                  fontFamily = FontFamily.Monospace
-                )
+            if (filtered.isEmpty()) {
+              item {
+                Box(
+                  modifier = Modifier.fillMaxWidth().padding(24.dp),
+                  contentAlignment = Alignment.Center
+                ) {
+                  Text("Пары не найдены", color = HudTextMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                }
               }
-              HorizontalDivider(color = Color(0x1A00D4FF))
+            } else {
+              items(filtered) { pair ->
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                      selectedSymbol = pair.symbol
+                      showPairDialog = false
+                      searchQuery = ""
+                    }
+                    .padding(vertical = 10.dp, horizontal = 6.dp),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically
+                ) {
+                  Text(
+                    pair.symbol,
+                    color = if (pair.symbol == selectedSymbol) HudCyan else Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.Monospace
+                  )
+                  Text(
+                    "${pair.baseAsset} / ${pair.quoteAsset}",
+                    color = HudTextMuted,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace
+                  )
+                }
+                HorizontalDivider(color = Color(0x1100D4FF))
+              }
             }
           }
         }
       },
       confirmButton = {
-        TextButton(onClick = { showPairDialog = false }) {
+        TextButton(onClick = {
+          showPairDialog = false
+          searchQuery = ""
+        }) {
           Text("ЗАКРЫТЬ", color = HudCyan, fontFamily = FontFamily.Monospace)
         }
+      }
+    )
+  }
+
+  // БОТТОМ-ШИТ НАСТРОЙКИ И ЗАПУСКА БЭКТЕСТА
+  if (showBacktestSheet) {
+    BacktestBottomSheet(
+      symbol = selectedSymbol,
+      interval = selectedInterval,
+      botType = if (isGridBotMode) BacktestBotType.GRID_BOT else BacktestBotType.SIGNAL_BOT,
+      onDismiss = { showBacktestSheet = false },
+      onBacktestFinished = { result ->
+        backtestResult = result
+        zoomFactor = 1.0f
+        scrollOffset = 0f
       }
     )
   }
 }
 
 /**
- * Отрисовка свечей на чистом Canvas без сторонних библиотек:
- * - Зеленый/красный прямоугольник тела свечи (close >= open -> зеленый, иначе красный)
- * - Тонкий фитиль/тень по high/low
- * - Горизонтальный drag-скролл
- * - Автомасштабирование по видимому диапазону high/low
- * - Подписи цен по правой шкале и времени снизу
- * - Пунктирная неоновая линия текущей цены (last price из tickerFlow)
- * - Интерактивное перекрестие (Crosshair) при удержании/касании
+ * Тулбар управления графиком (Requirement 6):
+ * - Кнопки зума [+] и [-]
+ * - Кнопка "Fit to screen" / "Вписать"
+ * - Переключатель вида: Свечи / Линейный график (Candles / Line)
+ * - Кнопка "БЭКТЕСТ" для запуска симуляции
+ */
+@Composable
+fun ChartToolbar(
+  chartVisualType: ChartVisualType,
+  onChartVisualTypeChange: (ChartVisualType) -> Unit,
+  onZoomIn: () -> Unit,
+  onZoomOut: () -> Unit,
+  onFitToScreen: () -> Unit,
+  onOpenBacktest: (() -> Unit)? = null,
+  isBacktestActive: Boolean = false,
+  modifier: Modifier = Modifier
+) {
+  Row(
+    modifier = modifier
+      .background(Color(0xFF071220), CutCornerShape(4.dp))
+      .border(1.dp, Color(0x2200D4FF), CutCornerShape(4.dp))
+      .padding(horizontal = 6.dp, vertical = 4.dp),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically
+  ) {
+    // 1. Переключатель вида: СВЕЧИ / ЛИНИЯ
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+      val isCandles = chartVisualType == ChartVisualType.CANDLES
+      Box(
+        modifier = Modifier
+          .background(
+            if (isCandles) Brush.linearGradient(listOf(HudNeonBlue, Color(0xFF00527A)))
+            else Brush.linearGradient(listOf(Color(0xFF0A182C), Color(0xFF0A182C))),
+            RoundedCornerShape(4.dp)
+          )
+          .border(1.dp, if (isCandles) HudCyan else Color(0x2200D4FF), RoundedCornerShape(4.dp))
+          .clickable { onChartVisualTypeChange(ChartVisualType.CANDLES) }
+          .padding(horizontal = 8.dp, vertical = 4.dp)
+          .testTag("chart_type_candles"),
+        contentAlignment = Alignment.Center
+      ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Icon(Icons.Outlined.CandlestickChart, contentDescription = null, tint = if (isCandles) Color.White else HudTextMuted, modifier = Modifier.size(13.dp))
+          Spacer(Modifier.width(4.dp))
+          Text("СВЕЧИ", color = if (isCandles) Color.White else HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+        }
+      }
+
+      Box(
+        modifier = Modifier
+          .background(
+            if (!isCandles) Brush.linearGradient(listOf(HudNeonBlue, Color(0xFF00527A)))
+            else Brush.linearGradient(listOf(Color(0xFF0A182C), Color(0xFF0A182C))),
+            RoundedCornerShape(4.dp)
+          )
+          .border(1.dp, if (!isCandles) HudCyan else Color(0x2200D4FF), RoundedCornerShape(4.dp))
+          .clickable { onChartVisualTypeChange(ChartVisualType.LINE) }
+          .padding(horizontal = 8.dp, vertical = 4.dp)
+          .testTag("chart_type_line"),
+        contentAlignment = Alignment.Center
+      ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Icon(Icons.Outlined.ShowChart, contentDescription = null, tint = if (!isCandles) Color.White else HudTextMuted, modifier = Modifier.size(13.dp))
+          Spacer(Modifier.width(4.dp))
+          Text("ЛИНИЯ", color = if (!isCandles) Color.White else HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+        }
+      }
+    }
+
+    // 2. Кнопка БЭКТЕСТ и Кнопки масштабирования: [-], [+], [ВПИСАТЬ]
+    Row(
+      horizontalArrangement = Arrangement.spacedBy(4.dp),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      if (onOpenBacktest != null) {
+        Box(
+          modifier = Modifier
+            .height(28.dp)
+            .background(
+              if (isBacktestActive) Brush.linearGradient(listOf(HudNeonPurple, Color(0xFF5A142A)))
+              else Brush.linearGradient(listOf(Color(0xFF0C1E36), Color(0xFF0C1E36))),
+              RoundedCornerShape(4.dp)
+            )
+            .border(1.dp, if (isBacktestActive) HudNeonPurple else Color(0x3300D4FF), RoundedCornerShape(4.dp))
+            .clickable(onClick = onOpenBacktest)
+            .padding(horizontal = 6.dp)
+            .testTag("chart_backtest_button"),
+          contentAlignment = Alignment.Center
+        ) {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.Science, contentDescription = "Бэктест", tint = if (isBacktestActive) Color.White else HudCyan, modifier = Modifier.size(13.dp))
+            Spacer(Modifier.width(3.dp))
+            Text(
+              if (isBacktestActive) "БЭКТЕСТ [ON]" else "БЭКТЕСТ",
+              color = if (isBacktestActive) Color.White else HudCyan,
+              fontSize = 9.5.sp,
+              fontFamily = FontFamily.Monospace,
+              fontWeight = FontWeight.Bold
+            )
+          }
+        }
+      }
+
+      // Кнопка Zoom Out (-)
+      Box(
+        modifier = Modifier
+          .size(28.dp)
+          .background(Color(0xFF0C1E36), RoundedCornerShape(4.dp))
+          .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(4.dp))
+          .clickable(onClick = onZoomOut)
+          .testTag("chart_zoom_out"),
+        contentAlignment = Alignment.Center
+      ) {
+        Icon(Icons.Filled.Remove, contentDescription = "Отдалить", tint = HudCyan, modifier = Modifier.size(16.dp))
+      }
+
+      // Кнопка Zoom In (+)
+      Box(
+        modifier = Modifier
+          .size(28.dp)
+          .background(Color(0xFF0C1E36), RoundedCornerShape(4.dp))
+          .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(4.dp))
+          .clickable(onClick = onZoomIn)
+          .testTag("chart_zoom_in"),
+        contentAlignment = Alignment.Center
+      ) {
+        Icon(Icons.Filled.Add, contentDescription = "Приблизить", tint = HudCyan, modifier = Modifier.size(16.dp))
+      }
+
+      // Кнопка Fit to Screen
+      Box(
+        modifier = Modifier
+          .height(28.dp)
+          .background(Color(0xFF0C1E36), RoundedCornerShape(4.dp))
+          .border(1.dp, HudNeonPink.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+          .clickable(onClick = onFitToScreen)
+          .padding(horizontal = 7.dp)
+          .testTag("chart_fit_screen"),
+        contentAlignment = Alignment.Center
+      ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Icon(Icons.Outlined.FitScreen, contentDescription = "Вписать", tint = HudNeonPink, modifier = Modifier.size(13.dp))
+          Spacer(Modifier.width(4.dp))
+          Text("ВПИСАТЬ", color = Color.White, fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Поиск ближайшей свечи по времени открытия (бинарный поиск)
+ */
+private fun findCandleIndexByTime(candleList: List<Candle>, time: Long): Int {
+  if (candleList.isEmpty()) return 0
+  var low = 0
+  var high = candleList.lastIndex
+  var bestIdx = 0
+  var minDiff = Long.MAX_VALUE
+  while (low <= high) {
+    val mid = (low + high) ushr 1
+    val t = candleList[mid].openTime
+    val diff = abs(t - time)
+    if (diff < minDiff) {
+      minDiff = diff
+      bestIdx = mid
+    }
+    if (t < time) low = mid + 1
+    else if (t > time) high = mid - 1
+    else return mid
+  }
+  return bestIdx
+}
+
+/**
+ * Отрисовка свечей или линии на Canvas:
+ * - Поддержка pinch-to-zoom (двумя пальцами)
+ * - Сохраняемый скролл и зум
+ * - Режим Свечи (Candles) / Линия (Line)
+ * - Автомасштабирование по видимым свечам
+ * - Сетка уровней Grid Bot с перетаскиваемыми маркерами
+ * - Визуальные маркеры бэктеста (сделки сигнального бота, исполненные уровни сетки, эквити)
  */
 @Composable
 fun CandlestickChart(
   candles: List<Candle>,
   currentPrice: Double,
+  symbol: String,
   interval: String,
+  chartVisualType: ChartVisualType = ChartVisualType.CANDLES,
+  zoomFactor: Float = 1.0f,
+  onZoomChange: (Float) -> Unit = {},
+  scrollOffset: Float = 0f,
+  onScrollOffsetChange: (Float) -> Unit = {},
   gridState: GridBotState? = null,
+  backtestResult: BacktestResult? = null,
   onDragUpperBound: ((Double) -> Unit)? = null,
   onDragLowerBound: ((Double) -> Unit)? = null,
   modifier: Modifier = Modifier
@@ -706,31 +969,20 @@ fun CandlestickChart(
     label = "grid_flash_alpha"
   )
 
-  var activeDragBound by remember { mutableStateOf<String?>(null) }
   var currentDisplayMin by remember { mutableDoubleStateOf(0.0) }
   var currentDisplayRange by remember { mutableDoubleStateOf(1.0) }
   var currentChartHeight by remember { mutableFloatStateOf(1f) }
 
-  // Настройки отображения
-  val candleWidthPx = with(density) { 9.dp.toPx() }
-  val candleGapPx = with(density) { 4.dp.toPx() }
+  // Расчет динамической ширины свечей на основе зума
+  val candleWidthPx = with(density) { (8.dp * zoomFactor).toPx().coerceIn(2f, 60f) }
+  val candleGapPx = with(density) { (3.5.dp * zoomFactor).toPx().coerceIn(1f, 25f) }
   val slotWidthPx = candleWidthPx + candleGapPx
   val priceScaleWidthPx = with(density) { 68.dp.toPx() }
   val timeScaleHeightPx = with(density) { 24.dp.toPx() }
 
-  // Смещение скролла (в пикселях). 0f — свежие свечи прижаты к правой шкале цен
-  var scrollOffset by remember { mutableFloatStateOf(0f) }
-
   // Состояние касания для перекрестия (Crosshair)
   var touchPoint by remember { mutableStateOf<Offset?>(null) }
   var touchedCandle by remember { mutableStateOf<Candle?>(null) }
-
-  // Сброс скролла при смене размера буфера/набора
-  LaunchedEffect(candles.size) {
-    scrollOffset = 0f
-    touchPoint = null
-    touchedCandle = null
-  }
 
   // Paint для нативных текстовых подписей шкалы
   val pricePaint = remember {
@@ -762,21 +1014,30 @@ fun CandlestickChart(
     }
   }
 
-  // Формат времени в зависимости от таймфрейма
+  val tradeTagPaint = remember {
+    android.graphics.Paint().apply {
+      color = android.graphics.Color.WHITE
+      textSize = with(density) { 8.5.sp.toPx() }
+      typeface = android.graphics.Typeface.MONOSPACE
+      isFakeBoldText = true
+      isAntiAlias = true
+    }
+  }
+
   val timeFormat = remember(interval) {
     if (interval == "1d") SimpleDateFormat("dd.MM", Locale.US)
     else SimpleDateFormat("HH:mm", Locale.US)
   }
 
   Column(modifier = modifier.fillMaxSize()) {
-    // Верхняя информационная строка: отображение O/H/L/C для выбранной свечи или последней
+    // Верхняя строка O/H/L/C для выбранной свечи или последней
     val displayCandle = touchedCandle ?: candles.lastOrNull()
     if (displayCandle != null) {
       Row(
         modifier = Modifier
           .fillMaxWidth()
           .background(Color(0xFF0A182C))
-          .padding(horizontal = 8.dp, vertical = 4.dp),
+          .padding(horizontal = 8.dp, vertical = 3.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
       ) {
@@ -794,66 +1055,78 @@ fun CandlestickChart(
       modifier = Modifier
         .fillMaxWidth()
         .weight(1f)
-        .pointerInput(candles.size, gridState?.config) {
-          detectDragGestures(
-            onDragStart = { offset ->
-              touchPoint = offset
-              if (gridState != null && currentDisplayRange > 0.0) {
-                val cfg = gridState.config
-                if (cfg.upperBound > 0.0 && cfg.lowerBound > 0.0) {
-                  val upNorm = (cfg.upperBound - currentDisplayMin) / currentDisplayRange
-                  val upY = (currentChartHeight - upNorm * currentChartHeight).toFloat()
+        // Обработка жестов: pinch-to-zoom (2 пальца) + перетаскивание границ + скролл (1 палец) (Requirement 3)
+        .pointerInput(gridState?.config, zoomFactor, scrollOffset, backtestResult) {
+          awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            var boundDragging: String? = null
+            touchPoint = down.position
 
-                  val lowNorm = (cfg.lowerBound - currentDisplayMin) / currentDisplayRange
-                  val lowY = (currentChartHeight - lowNorm * currentChartHeight).toFloat()
+            if (backtestResult == null && gridState != null && currentDisplayRange > 0.0) {
+              val cfg = gridState.config
+              if (cfg.upperBound > 0.0 && cfg.lowerBound > 0.0) {
+                val upNorm = (cfg.upperBound - currentDisplayMin) / currentDisplayRange
+                val upY = (currentChartHeight - upNorm * currentChartHeight).toFloat()
 
-                  val threshold = 36.dp.toPx()
-                  if (abs(offset.y - upY) < threshold) {
-                    activeDragBound = "UPPER"
-                  } else if (abs(offset.y - lowY) < threshold) {
-                    activeDragBound = "LOWER"
-                  } else {
-                    activeDragBound = null
+                val lowNorm = (cfg.lowerBound - currentDisplayMin) / currentDisplayRange
+                val lowY = (currentChartHeight - lowNorm * currentChartHeight).toFloat()
+
+                val threshold = 36.dp.toPx()
+                if (abs(down.position.y - upY) < threshold) {
+                  boundDragging = "UPPER"
+                } else if (abs(down.position.y - lowY) < threshold) {
+                  boundDragging = "LOWER"
+                }
+              }
+            }
+
+            do {
+              val event = awaitPointerEvent()
+              val pressedPointers = event.changes.filter { it.pressed }
+
+              if (pressedPointers.size >= 2) {
+                // ПИНЧ-ТУ-ЗУМ ДВУМЯ ПАЛЬЦАМИ
+                boundDragging = null
+                val p1 = pressedPointers[0]
+                val p2 = pressedPointers[1]
+                val curDist = (p1.position - p2.position).getDistance()
+                val prevDist = (p1.previousPosition - p2.previousPosition).getDistance()
+                if (prevDist > 0f) {
+                  val scale = curDist / prevDist
+                  val newZoom = (zoomFactor * scale).coerceIn(0.25f, 3.5f)
+                  onZoomChange(newZoom)
+                }
+                val panX = ((p1.position.x - p1.previousPosition.x) + (p2.position.x - p2.previousPosition.x)) / 2f
+                onScrollOffsetChange(scrollOffset + panX)
+                event.changes.forEach { it.consume() }
+              } else if (pressedPointers.size == 1) {
+                // СКРОЛЛ ИЛИ ПЕРЕТАСКИВАНИЕ ГРАНИЦЫ
+                val pointer = pressedPointers[0]
+                touchPoint = pointer.position
+                val panX = pointer.position.x - pointer.previousPosition.x
+
+                if (boundDragging == "UPPER") {
+                  pointer.consume()
+                  val norm = (1f - (pointer.position.y / currentChartHeight)).coerceIn(0f, 1f)
+                  val newPrice = currentDisplayMin + norm * currentDisplayRange
+                  onDragUpperBound?.invoke(newPrice)
+                } else if (boundDragging == "LOWER") {
+                  pointer.consume()
+                  val norm = (1f - (pointer.position.y / currentChartHeight)).coerceIn(0f, 1f)
+                  val newPrice = currentDisplayMin + norm * currentDisplayRange
+                  onDragLowerBound?.invoke(newPrice)
+                } else {
+                  if (abs(panX) > 0.5f) {
+                    pointer.consume()
+                    onScrollOffsetChange(scrollOffset + panX)
                   }
                 }
               }
-            },
-            onDragEnd = {
-              touchPoint = null
-              touchedCandle = null
-              activeDragBound = null
-            },
-            onDragCancel = {
-              touchPoint = null
-              touchedCandle = null
-              activeDragBound = null
-            },
-            onDrag = { change, dragAmount ->
-              change.consume()
-              touchPoint = change.position
-              if (activeDragBound == "UPPER") {
-                val norm = (1f - (change.position.y / currentChartHeight)).coerceIn(0f, 1f)
-                val newPrice = currentDisplayMin + norm * currentDisplayRange
-                onDragUpperBound?.invoke(newPrice)
-              } else if (activeDragBound == "LOWER") {
-                val norm = (1f - (change.position.y / currentChartHeight)).coerceIn(0f, 1f)
-                val newPrice = currentDisplayMin + norm * currentDisplayRange
-                onDragLowerBound?.invoke(newPrice)
-              } else {
-                scrollOffset += dragAmount.x
-              }
-            }
-          )
-        }
-        .pointerInput(candles.size) {
-          detectTapGestures(
-            onPress = { offset ->
-              touchPoint = offset
-              tryAwaitRelease()
-              touchPoint = null
-              touchedCandle = null
-            }
-          )
+            } while (event.changes.any { it.pressed })
+
+            touchPoint = null
+            touchedCandle = null
+          }
         }
     ) {
       Canvas(modifier = Modifier.fillMaxSize()) {
@@ -869,12 +1142,12 @@ fun CandlestickChart(
         val contentWidth = candles.size * slotWidthPx
         val minScroll = if (contentWidth > chartWidth) -(contentWidth - chartWidth) else 0f
         val maxScroll = 0f
-        scrollOffset = scrollOffset.coerceIn(minScroll, maxScroll)
+        val clampedScrollOffset = scrollOffset.coerceIn(minScroll, maxScroll)
 
         // 1. Определение видимых свечей и их экстремумов (АВТОМАСШТАБ)
         val visibleCandles = mutableListOf<Pair<Int, Candle>>()
         for (i in candles.indices) {
-          val candleCenterX = chartWidth - (candles.size - 1 - i) * slotWidthPx + scrollOffset - (slotWidthPx / 2)
+          val candleCenterX = chartWidth - (candles.size - 1 - i) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
           if (candleCenterX + slotWidthPx >= 0 && candleCenterX - slotWidthPx <= chartWidth) {
             visibleCandles.add(i to candles[i])
           }
@@ -908,7 +1181,6 @@ fun CandlestickChart(
           val priceVal = displayMin + (1f - frac) * displayRange
           val lineY = frac * chartHeight
 
-          // Горизонтальная линия сетки
           drawLine(
             color = Color(0x1200D4FF),
             start = Offset(0f, lineY),
@@ -916,7 +1188,6 @@ fun CandlestickChart(
             strokeWidth = 1f
           )
 
-          // Текст цены справа
           drawIntoCanvas { canvas ->
             val pText = formatPrice(priceVal)
             canvas.nativeCanvas.drawText(
@@ -928,15 +1199,13 @@ fun CandlestickChart(
           }
         }
 
-        // Разделительная линия между графиком и правой шкалой
+        // Разделительные линии шкалы
         drawLine(
           color = Color(0x3300D4FF),
           start = Offset(chartWidth, 0f),
           end = Offset(chartWidth, chartHeight),
           strokeWidth = 1.dp.toPx()
         )
-
-        // Разделительная линия между графиком и нижней временной шкалой
         drawLine(
           color = Color(0x3300D4FF),
           start = Offset(0f, chartHeight),
@@ -944,55 +1213,110 @@ fun CandlestickChart(
           strokeWidth = 1.dp.toPx()
         )
 
-        // 3. Отрисовка свечей и временных меток
+        // 3. ОТРИСОВКА СВЕЧЕЙ ИЛИ ЛИНИИ (Requirement 6)
         var lastDrawnTimeX = -100f
         val minTimeLabelGap = 55.dp.toPx()
 
-        for ((idx, candle) in visibleCandles) {
-          val candleCenterX = chartWidth - (candles.size - 1 - idx) * slotWidthPx + scrollOffset - (slotWidthPx / 2)
+        if (chartVisualType == ChartVisualType.LINE) {
+          // Отрисовка линейного графика с градиентной заливкой
+          val linePath = Path()
+          val fillPath = Path()
+          var firstPt: Offset? = null
+          var lastPt: Offset? = null
 
-          val isBull = candle.close >= candle.open
-          val candleColor = if (isBull) HudGreen else HudRed
+          for (k in visibleCandles.indices) {
+            val (idx, candle) = visibleCandles[k]
+            val candleCenterX = chartWidth - (candles.size - 1 - idx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+            val closeY = priceToY(candle.close)
+            val pt = Offset(candleCenterX, closeY)
 
-          val highY = priceToY(candle.high)
-          val lowY = priceToY(candle.low)
-          val openY = priceToY(candle.open)
-          val closeY = priceToY(candle.close)
-
-          // Фитиль (тень свечи)
-          drawLine(
-            color = candleColor,
-            start = Offset(candleCenterX, highY),
-            end = Offset(candleCenterX, lowY),
-            strokeWidth = 1.2.dp.toPx()
-          )
-
-          // Тело свечи (прямоугольник)
-          val bodyTop = min(openY, closeY)
-          val bodyHeight = max(abs(openY - closeY), 2.dp.toPx())
-          drawRect(
-            color = candleColor,
-            topLeft = Offset(candleCenterX - (candleWidthPx / 2), bodyTop),
-            size = Size(candleWidthPx, bodyHeight)
-          )
-
-          // Временная метка по нижнему краю
-          if (candleCenterX - lastDrawnTimeX >= minTimeLabelGap && candleCenterX in 20f..(chartWidth - 20f)) {
-            val tText = timeFormat.format(Date(candle.openTime))
-            drawIntoCanvas { canvas ->
-              canvas.nativeCanvas.drawText(
-                tText,
-                candleCenterX,
-                chartHeight + 16.dp.toPx(),
-                timePaint
-              )
+            if (k == 0) {
+              linePath.moveTo(pt.x, pt.y)
+              firstPt = pt
+            } else {
+              linePath.lineTo(pt.x, pt.y)
             }
-            lastDrawnTimeX = candleCenterX
+            lastPt = pt
+
+            // Временная метка по нижнему краю
+            if (candleCenterX - lastDrawnTimeX >= minTimeLabelGap && candleCenterX in 20f..(chartWidth - 20f)) {
+              val tText = timeFormat.format(Date(candle.openTime))
+              drawIntoCanvas { canvas ->
+                canvas.nativeCanvas.drawText(tText, candleCenterX, chartHeight + 16.dp.toPx(), timePaint)
+              }
+              lastDrawnTimeX = candleCenterX
+            }
+          }
+
+          if (firstPt != null && lastPt != null) {
+            fillPath.addPath(linePath)
+            fillPath.lineTo(lastPt.x, chartHeight)
+            fillPath.lineTo(firstPt.x, chartHeight)
+            fillPath.close()
+
+            drawPath(
+              path = fillPath,
+              brush = Brush.verticalGradient(
+                listOf(HudCyan.copy(alpha = 0.25f), Color.Transparent),
+                startY = 0f,
+                endY = chartHeight
+              )
+            )
+
+            drawPath(
+              path = linePath,
+              color = HudCyan,
+              style = Stroke(width = 2.dp.toPx())
+            )
+          }
+        } else {
+          // Отрисовка японских свечей (Candlesticks)
+          for ((idx, candle) in visibleCandles) {
+            val candleCenterX = chartWidth - (candles.size - 1 - idx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+
+            val isBull = candle.close >= candle.open
+            val candleColor = if (isBull) HudGreen else HudRed
+
+            val highY = priceToY(candle.high)
+            val lowY = priceToY(candle.low)
+            val openY = priceToY(candle.open)
+            val closeY = priceToY(candle.close)
+
+            // Фитиль (тень)
+            drawLine(
+              color = candleColor,
+              start = Offset(candleCenterX, highY),
+              end = Offset(candleCenterX, lowY),
+              strokeWidth = 1.2.dp.toPx()
+            )
+
+            // Тело свечи
+            val bodyTop = min(openY, closeY)
+            val bodyHeight = max(abs(openY - closeY), 2.dp.toPx())
+            drawRect(
+              color = candleColor,
+              topLeft = Offset(candleCenterX - (candleWidthPx / 2), bodyTop),
+              size = Size(candleWidthPx, bodyHeight)
+            )
+
+            // Временная метка по нижнему краю
+            if (candleCenterX - lastDrawnTimeX >= minTimeLabelGap && candleCenterX in 20f..(chartWidth - 20f)) {
+              val tText = timeFormat.format(Date(candle.openTime))
+              drawIntoCanvas { canvas ->
+                canvas.nativeCanvas.drawText(
+                  tText,
+                  candleCenterX,
+                  chartHeight + 16.dp.toPx(),
+                  timePaint
+                )
+              }
+              lastDrawnTimeX = candleCenterX
+            }
           }
         }
 
-        // 4. Горизонтальная пунктирная линия текущей цены (last price из tickerFlow)
-        if (currentPrice in displayMin..displayMax) {
+        // 4. Горизонтальная пунктирная линия текущей цены (только в Live-режиме)
+        if (backtestResult == null && currentPrice in displayMin..displayMax) {
           val curY = priceToY(currentPrice)
           val dashPathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f), 0f)
 
@@ -1004,7 +1328,6 @@ fun CandlestickChart(
             pathEffect = dashPathEffect
           )
 
-          // Бейдж текущей цены на правой шкале
           val badgeH = 16.dp.toPx()
           val badgeTop = (curY - badgeH / 2).coerceIn(0f, chartHeight - badgeH)
           drawRect(
@@ -1016,7 +1339,7 @@ fun CandlestickChart(
             color = HudCyan,
             topLeft = Offset(chartWidth + 2.dp.toPx(), badgeTop),
             size = Size(priceScaleWidthPx - 4.dp.toPx(), badgeH),
-            style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx())
+            style = Stroke(1.dp.toPx())
           )
           drawIntoCanvas { canvas ->
             val curText = formatPrice(currentPrice)
@@ -1033,7 +1356,6 @@ fun CandlestickChart(
         touchPoint?.let { pt ->
           if (pt.x in 0f..chartWidth && pt.y in 0f..chartHeight) {
             val crossDash = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
-            // Вертикальная линия перекрестия
             drawLine(
               color = Color.White.copy(alpha = 0.5f),
               start = Offset(pt.x, 0f),
@@ -1041,7 +1363,6 @@ fun CandlestickChart(
               strokeWidth = 1f,
               pathEffect = crossDash
             )
-            // Горизонтальная линия перекрестия
             drawLine(
               color = Color.White.copy(alpha = 0.5f),
               start = Offset(0f, pt.y),
@@ -1050,8 +1371,7 @@ fun CandlestickChart(
               pathEffect = crossDash
             )
 
-            // Определение свечи под пальцем
-            val relX = pt.x - scrollOffset
+            val relX = pt.x - clampedScrollOffset
             val idxFromRight = ((chartWidth - relX) / slotWidthPx).toInt()
             val targetIdx = candles.size - 1 - idxFromRight
             if (targetIdx in candles.indices) {
@@ -1060,11 +1380,12 @@ fun CandlestickChart(
           }
         }
 
-        // 6. Отрисовка уровней сетки Grid Bot, маркеров границ и линии peakPrice
-        if (gridState != null) {
+        // 6. Отрисовка уровней сетки Grid Bot, маркеров границ и линии peakPrice (Live)
+        if (backtestResult == null && gridState != null) {
           GridOverlayRenderer.drawGridOverlay(
             drawScope = this,
             gridState = gridState,
+            currentPrice = currentPrice,
             chartWidth = chartWidth,
             chartHeight = chartHeight,
             priceScaleWidthPx = priceScaleWidthPx,
@@ -1076,6 +1397,123 @@ fun CandlestickChart(
             flashAlpha = flashAlpha
           )
         }
+
+        // 7. Отрисовка результатов Бэктеста
+        if (backtestResult != null) {
+          // Если это бэктест Grid Bot — отрисовываем уровни сетки
+          if (backtestResult.config.gridConfig != null) {
+            val dummyGridState = GridBotState(
+              isActive = true,
+              config = backtestResult.config.gridConfig
+            )
+            GridOverlayRenderer.drawGridOverlay(
+              drawScope = this,
+              gridState = dummyGridState,
+              currentPrice = 0.0,
+              chartWidth = chartWidth,
+              chartHeight = chartHeight,
+              priceScaleWidthPx = priceScaleWidthPx,
+              displayMin = displayMin,
+              displayMax = displayMax,
+              priceToY = ::priceToY,
+              gridPaint = pricePaint,
+              badgePaint = curPriceBadgePaint,
+              flashAlpha = 0f
+            )
+          }
+
+          // Отрисовка исполненных уровней сетки (Grid Fill Markers)
+          for (fill in backtestResult.gridFillMarkers) {
+            val fillIdx = findCandleIndexByTime(candles, fill.time)
+            val fillX = chartWidth - (candles.size - 1 - fillIdx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+            val fillY = priceToY(fill.price)
+
+            if (fillX in -15f..(chartWidth + 15f)) {
+              val isBuy = fill.side == "BUY"
+              val dotColor = if (isBuy) HudGreen else HudNeonPink
+
+              drawCircle(
+                color = dotColor,
+                radius = 4.5f,
+                center = Offset(fillX, fillY)
+              )
+              drawCircle(
+                color = Color.White,
+                radius = 2f,
+                center = Offset(fillX, fillY)
+              )
+
+              if (!isBuy && fill.profitUsdt > 0.001) {
+                drawIntoCanvas { canvas ->
+                  val profitStr = "+$${"%.2f".format(Locale.US, fill.profitUsdt)}"
+                  canvas.nativeCanvas.drawText(
+                    profitStr,
+                    fillX + 6f,
+                    fillY - 4f,
+                    tradeTagPaint.apply {
+                      color = android.graphics.Color.argb(255, 0, 230, 118)
+                    }
+                  )
+                }
+              }
+            }
+          }
+
+          // Отрисовка сделок сигнального бота (Signal Bot Trades: Entry/Exit + Connector + % PnL)
+          for (marker in backtestResult.tradeMarkers) {
+            val entryIdx = findCandleIndexByTime(candles, marker.entryTime)
+            val exitIdx = findCandleIndexByTime(candles, marker.exitTime)
+
+            val entryX = chartWidth - (candles.size - 1 - entryIdx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+            val exitX = chartWidth - (candles.size - 1 - exitIdx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+            val entryY = priceToY(marker.entryPrice)
+            val exitY = priceToY(marker.exitPrice)
+
+            if (entryX in -40f..(chartWidth + 40f) || exitX in -40f..(chartWidth + 40f)) {
+              // Зелёный треугольник вверх на entryPrice
+              val entryTri = Path().apply {
+                moveTo(entryX, entryY + 2f)
+                lineTo(entryX - 6f, entryY + 12f)
+                lineTo(entryX + 6f, entryY + 12f)
+                close()
+              }
+              drawPath(entryTri, color = HudGreen)
+
+              // Треугольник вниз на exitPrice
+              val exitColor = if (marker.isProfit) HudGreen else HudRed
+              val exitTri = Path().apply {
+                moveTo(exitX, exitY - 2f)
+                lineTo(exitX - 6f, exitY - 12f)
+                lineTo(exitX + 6f, exitY - 12f)
+                close()
+              }
+              drawPath(exitTri, color = exitColor)
+
+              // Тонкая пунктирная линия входа-выхода
+              val lineDash = PathEffect.dashPathEffect(floatArrayOf(6f, 4f), 0f)
+              drawLine(
+                color = exitColor.copy(alpha = 0.85f),
+                start = Offset(entryX, entryY),
+                end = Offset(exitX, exitY),
+                strokeWidth = 1.5f,
+                pathEffect = lineDash
+              )
+
+              // Процент прибыли / убытка
+              val pnlText = "${if (marker.pnlPercent >= 0) "+" else ""}${"%.2f".format(Locale.US, marker.pnlPercent)}%"
+              drawIntoCanvas { canvas ->
+                canvas.nativeCanvas.drawText(
+                  pnlText,
+                  exitX + 8f,
+                  exitY - 4f,
+                  tradeTagPaint.apply {
+                    color = if (marker.isProfit) android.graphics.Color.argb(255, 0, 230, 118) else android.graphics.Color.argb(255, 255, 82, 82)
+                  }
+                )
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -1084,6 +1522,7 @@ fun CandlestickChart(
 @Composable
 fun ChartTopBar(
   selectedSymbol: String,
+  isBacktest: Boolean = false,
   onBack: () -> Unit
 ) {
   Row(
@@ -1101,65 +1540,76 @@ fun ChartTopBar(
         modifier = Modifier.size(36.dp).testTag("chart_back_button")
       ) {
         Icon(
-          imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-          contentDescription = "Назад",
+          Icons.AutoMirrored.Outlined.ArrowBack,
+          contentDescription = "Назад к дашборду",
           tint = HudCyan
         )
       }
       Spacer(Modifier.width(4.dp))
       Column {
         Text(
-          "ГРАФИК // СВЕЧИ BINANCE",
+          "ГРАФИК И СЕТОЧНЫЙ БОТ",
           color = Color.White,
           fontWeight = FontWeight.Bold,
-          fontSize = 12.sp,
-          fontFamily = FontFamily.Monospace,
-          letterSpacing = 1.sp
-        )
-        Text(
-          "БУФЕР 150 СВЕЧЕЙ // ТЕКУЩИЙ ТАЙМФРЕЙМ",
-          color = HudNeonPink,
-          fontSize = 9.sp,
+          fontSize = 13.sp,
           fontFamily = FontFamily.Monospace
         )
-      }
-    }
-
-    // Неоновый индикатор WebSocket
-    Box(
-      modifier = Modifier
-        .background(HudGreen.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
-        .border(1.dp, HudGreen.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
-        .padding(horizontal = 8.dp, vertical = 4.dp)
-    ) {
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-          modifier = Modifier
-            .size(6.dp)
-            .background(HudGreen, RoundedCornerShape(3.dp))
-        )
-        Spacer(Modifier.width(5.dp))
         Text(
-          "WS LIVE",
-          color = HudGreen,
+          "BINANCE SPOT // $selectedSymbol",
+          color = HudTextMuted,
           fontSize = 10.sp,
-          fontWeight = FontWeight.Bold,
           fontFamily = FontFamily.Monospace
         )
       }
     }
-  }
-}
 
-/**
- * Универсальное форматирование цены инструмента
- */
-fun formatPrice(price: Double): String {
-  return when {
-    price >= 1000.0 -> String.format(Locale.US, "%.2f", price)
-    price >= 1.0 -> String.format(Locale.US, "%.3f", price)
-    price >= 0.001 -> String.format(Locale.US, "%.5f", price)
-    price > 0.0 -> String.format(Locale.US, "%.7f", price)
-    else -> "--.--"
+    // Бейдж соединения или бэктеста
+    if (isBacktest) {
+      Box(
+        modifier = Modifier
+          .background(Color(0xFF2C0A3E), RoundedCornerShape(4.dp))
+          .border(1.dp, HudNeonPurple, RoundedCornerShape(4.dp))
+          .padding(horizontal = 8.dp, vertical = 4.dp)
+      ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Box(
+            modifier = Modifier
+              .size(6.dp)
+              .background(HudNeonPurple, RoundedCornerShape(3.dp))
+          )
+          Spacer(Modifier.width(5.dp))
+          Text(
+            "БЭКТЕСТ",
+            color = HudNeonPurple,
+            fontWeight = FontWeight.Bold,
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace
+          )
+        }
+      }
+    } else {
+      Box(
+        modifier = Modifier
+          .background(Color(0xFF003820), RoundedCornerShape(4.dp))
+          .border(1.dp, HudGreen, RoundedCornerShape(4.dp))
+          .padding(horizontal = 8.dp, vertical = 4.dp)
+      ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Box(
+            modifier = Modifier
+              .size(6.dp)
+              .background(HudGreen, RoundedCornerShape(3.dp))
+          )
+          Spacer(Modifier.width(5.dp))
+          Text(
+            "LIVE WS",
+            color = HudGreen,
+            fontWeight = FontWeight.Bold,
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace
+          )
+        }
+      }
+    }
   }
 }
