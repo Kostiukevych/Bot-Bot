@@ -207,7 +207,7 @@ fun GridBotConfigPanel(
             contentAlignment = Alignment.Center
           ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-              Icon(Icons.AutoMirrored.Outlined.TrendingUp, contentDescription = null, tint = if (isLong) HudGreen else HudTextMuted, modifier = Modifier.size(15.dp))
+              Icon(Icons.Outlined.TrendingUp, contentDescription = null, tint = if (isLong) HudGreen else HudTextMuted, modifier = Modifier.size(15.dp))
               Spacer(Modifier.width(4.dp))
               Text("LONG", color = if (isLong) HudGreen else HudTextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             }
@@ -230,7 +230,7 @@ fun GridBotConfigPanel(
             contentAlignment = Alignment.Center
           ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-              Icon(Icons.AutoMirrored.Outlined.TrendingDown, contentDescription = null, tint = if (isShort) HudRed else HudTextMuted, modifier = Modifier.size(15.dp))
+              Icon(Icons.Outlined.TrendingDown, contentDescription = null, tint = if (isShort) HudRed else HudTextMuted, modifier = Modifier.size(15.dp))
               Spacer(Modifier.width(4.dp))
               Text("SHORT", color = if (isShort) HudRed else HudTextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             }
@@ -343,7 +343,7 @@ fun GridBotConfigPanel(
               .border(1.dp, Color(0x3300D4FF), RoundedCornerShape(6.dp))
               .testTag("grid_logs_button")
           ) {
-            Icon(Icons.AutoMirrored.Outlined.ReceiptLong, contentDescription = "Логи сетки", tint = HudCyan, modifier = Modifier.size(20.dp))
+            Icon(Icons.Outlined.ReceiptLong, contentDescription = "Логи сетки", tint = HudCyan, modifier = Modifier.size(20.dp))
           }
         }
 
@@ -587,7 +587,7 @@ fun GridBotConfigPanel(
       containerColor = Color(0xFF08162A),
       title = {
         Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.AutoMirrored.Outlined.ReceiptLong, contentDescription = null, tint = HudCyan)
+          Icon(Icons.Outlined.ReceiptLong, contentDescription = null, tint = HudCyan)
           Spacer(Modifier.width(8.dp))
           Text(
             "ЖУРНАЛ ДЕЙСТВИЙ GRID BOT",

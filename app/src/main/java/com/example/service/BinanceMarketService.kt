@@ -92,10 +92,11 @@ class BinanceMarketService(
       }
     }
 
-  suspend fun getOpenOrders(apiKey: String, secretKey: String): List<OpenOrder> = withContext(Dispatchers.IO) {
+  suspend fun getOpenOrders(apiKey: String, secretKey: String, symbol: String? = null): List<OpenOrder> = withContext(Dispatchers.IO) {
     if (apiKey.isBlank() || secretKey.isBlank()) return@withContext emptyList()
     val timestamp = System.currentTimeMillis()
-    val queryString = "timestamp=$timestamp&recvWindow=5000"
+    val symbolParam = if (!symbol.isNullOrBlank()) "symbol=${symbol.trim().uppercase()}&" else ""
+    val queryString = "${symbolParam}timestamp=$timestamp&recvWindow=5000"
     val signature = hmacSha256(queryString, secretKey.trim())
     val fullUrl = "$TESTNET_BASE_URL/api/v3/openOrders?$queryString&signature=$signature"
 

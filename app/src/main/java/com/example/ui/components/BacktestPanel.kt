@@ -237,7 +237,7 @@ fun BacktestBottomSheet(
         ) {
           Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
-              Icons.AutoMirrored.Outlined.TrendingUp,
+              Icons.Outlined.TrendingUp,
               contentDescription = null,
               tint = if (isSignalSelected) HudNavyDark else HudTextMuted,
               modifier = Modifier.size(16.dp)
@@ -820,7 +820,7 @@ fun EquityCurveChart(
         verticalAlignment = Alignment.CenterVertically
       ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.AutoMirrored.Outlined.TrendingUp, contentDescription = null, tint = HudCyan, modifier = Modifier.size(14.dp))
+          Icon(Icons.Outlined.TrendingUp, contentDescription = null, tint = HudCyan, modifier = Modifier.size(14.dp))
           Spacer(Modifier.width(4.dp))
           Text(
             "КРИВАЯ ДЕПОЗИТА // EQUITY CURVE",

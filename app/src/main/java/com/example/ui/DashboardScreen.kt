@@ -255,7 +255,7 @@ fun DashboardScreen(
                   shape = CutCornerShape(4.dp),
                   modifier = Modifier.fillMaxWidth().testTag("view_on_chart_button")
                 ) {
-                  Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = null, tint = HudNeonPurple, modifier = Modifier.size(16.dp))
+                  Icon(Icons.Outlined.ShowChart, contentDescription = null, tint = HudNeonPurple, modifier = Modifier.size(16.dp))
                   Spacer(Modifier.width(6.dp))
                   Text(
                     "ОТКРЫТЬ НА ИНТЕРАКТИВНОМ ГРАФИКЕ",
@@ -395,7 +395,7 @@ fun DashboardScreen(
 
               HudCard(
                 title = "ОТКРЫТАЯ ПОЗИЦИЯ // ${openPos.symbol}",
-                icon = if (isCloseIssue) Icons.Outlined.WarningAmber else Icons.AutoMirrored.Outlined.TrendingUp,
+                icon = if (isCloseIssue) Icons.Outlined.WarningAmber else Icons.Outlined.TrendingUp,
                 borderColor = cardBorderColor,
                 flashTriggerId = flashEvent?.id,
                 flashType = flashEvent?.type ?: TradeFlashType.NONE,
@@ -613,7 +613,7 @@ fun DashboardScreen(
 
             HudCard(
               title = "РЫНОЧНЫЙ ТИКЕР // LIVE STREAM",
-              icon = Icons.AutoMirrored.Outlined.ShowChart,
+              icon = Icons.Outlined.ShowChart,
               modifier = Modifier.fillMaxWidth().testTag("pair_selector_card")
             ) {
               Row(
@@ -1299,7 +1299,7 @@ fun DashboardScreen(
           item {
             HudCard(
               title = "ЖУРНАЛ БОТА // LIVE LOG",
-              icon = Icons.AutoMirrored.Outlined.ReceiptLong,
+              icon = Icons.Outlined.ReceiptLong,
               borderColor = HudCyan,
               modifier = Modifier.fillMaxWidth().testTag("bot_logs_card")
             ) {
@@ -1366,7 +1366,7 @@ fun DashboardScreen(
           item {
             HudCard(
               title = "АКТИВНЫЕ ОРДЕРА (${openOrders.size})",
-              icon = Icons.AutoMirrored.Outlined.ListAlt,
+              icon = Icons.Outlined.ListAlt,
               modifier = Modifier.fillMaxWidth().testTag("open_orders_card")
             ) {
               if (openOrders.isEmpty()) {
@@ -1638,7 +1638,7 @@ fun DashboardTopBar(
               onClick = onOpenChart,
               modifier = Modifier.size(30.dp).testTag("chart_nav_button")
             ) {
-              Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = "График", tint = HudNeonPink, modifier = Modifier.size(18.dp))
+              Icon(Icons.Outlined.ShowChart, contentDescription = "График", tint = HudNeonPink, modifier = Modifier.size(18.dp))
             }
           }
 
@@ -1646,7 +1646,7 @@ fun DashboardTopBar(
             onClick = onOpenHistory,
             modifier = Modifier.size(30.dp).testTag("history_nav_button")
           ) {
-            Icon(Icons.AutoMirrored.Outlined.ReceiptLong, contentDescription = "History", tint = HudCyan, modifier = Modifier.size(18.dp))
+            Icon(Icons.Outlined.ReceiptLong, contentDescription = "History", tint = HudCyan, modifier = Modifier.size(18.dp))
           }
           IconButton(
             onClick = onOpenSettings,
@@ -1701,7 +1701,7 @@ fun DashboardTopBar(
                     )
                   },
                   leadingIcon = {
-                    Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = null, tint = HudNeonPink, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Outlined.ShowChart, contentDescription = null, tint = HudNeonPink, modifier = Modifier.size(18.dp))
                   },
                   onClick = {
                     menuExpanded = false

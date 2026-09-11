@@ -168,7 +168,7 @@ fun ApiSettingsScreen(
           HudCard(
             modifier = Modifier.fillMaxWidth(),
             title = "РЕЖИМ ПОДКЛЮЧЕНИЯ (СЕТЬ)",
-            icon = Icons.AutoMirrored.Outlined.AltRoute
+            icon = Icons.Outlined.AltRoute
           ) {
             Row(
               modifier = Modifier.fillMaxWidth(),

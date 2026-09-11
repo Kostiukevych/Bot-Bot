@@ -298,6 +298,15 @@ class GridBotEngine(private val context: Context) {
     if (!state.isActive) return@withContext
 
     val levels = state.levels.map { it.copy() }.toMutableList()
+    val pendingLevels = levels.filter {
+      it.orderId != null && (it.status == GridLevelStatus.PENDING_BUY || it.status == GridLevelStatus.PENDING_SELL)
+    }
+    if (pendingLevels.isEmpty()) return@withContext
+
+    // 1 запрос на получение всех открытых ордеров пары вместо N последовательных
+    val openOrders = marketService.getOpenOrders(apiKey, secretKey, pair.symbol)
+    val openOrderIds = openOrders.map { it.orderId }.toSet()
+
     var stateChanged = false
     var newCompletedGrids = state.completedGrids
     var newProfit = state.totalProfitUsdt
@@ -307,6 +316,12 @@ class GridBotEngine(private val context: Context) {
       val oId = level.orderId ?: continue
 
       if (level.status == GridLevelStatus.PENDING_BUY || level.status == GridLevelStatus.PENDING_SELL) {
+        // Если ордер всё ещё есть в списке открытых — он ожидает исполнения, пропускаем
+        if (openOrderIds.contains(oId)) {
+          continue
+        }
+
+        // Ордер отсутствует среди открытых — он исполнился или отменён; уточняем точечным запросом
         val orderStatus = marketService.getOrderStatus(apiKey, secretKey, pair.symbol, oId)
 
         if (orderStatus.equals("FILLED", ignoreCase = true)) {
@@ -383,6 +398,11 @@ class GridBotEngine(private val context: Context) {
               }
             }
           }
+        } else if (orderStatus.equals("CANCELED", ignoreCase = true) || orderStatus.equals("EXPIRED", ignoreCase = true)) {
+          stateChanged = true
+          level.status = GridLevelStatus.CANCELED
+          level.orderId = null
+          addLog("Ордер уровня ${i + 1} отменён на бирже")
         }
       }
     }

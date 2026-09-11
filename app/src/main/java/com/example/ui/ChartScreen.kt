@@ -141,14 +141,16 @@ fun ChartScreen(
     wsService.subscribeToTicker(selectedSymbol)
   }
 
-  // ИЗОЛИРОВАННЫЙ БУФЕР СВЕЧЕЙ (ровно 150 свечей для текущей пары и таймфрейма)
-  var candles by remember { mutableStateOf<List<Candle>>(emptyList()) }
+  // ИЗОЛИРОВАННЫЙ БУФЕР СВЕЧЕЙ (список закрытых свечей + лёгкий объект для текущей формирующейся свечи)
+  var closedCandles by remember { mutableStateOf<List<Candle>>(emptyList()) }
+  var liveCandle by remember { mutableStateOf<Candle?>(null) }
   var isLoadingCandles by remember { mutableStateOf(true) }
   var chartError by remember { mutableStateOf<String?>(null) }
 
   // При КАЖДОЙ смене пары ИЛИ таймфрейма:
   LaunchedEffect(selectedSymbol, selectedInterval) {
-    candles = emptyList()
+    closedCandles = emptyList()
+    liveCandle = null
     isLoadingCandles = true
     chartError = null
 
@@ -156,7 +158,14 @@ fun ChartScreen(
 
     try {
       val freshList = marketService.fetchCandles(selectedSymbol, selectedInterval, 150)
-      candles = freshList.takeLast(150)
+      if (freshList.isNotEmpty()) {
+        val limited = freshList.takeLast(150)
+        closedCandles = limited.dropLast(1)
+        liveCandle = limited.lastOrNull()
+      } else {
+        closedCandles = emptyList()
+        liveCandle = null
+      }
       isLoadingCandles = false
     } catch (e: Exception) {
       chartError = e.message ?: "Сбой загрузки свечей"
@@ -173,21 +182,22 @@ fun ChartScreen(
       if (update.symbol.equals(selectedSymbol, ignoreCase = true) &&
         update.interval.equals(selectedInterval, ignoreCase = true)
       ) {
-        val current = candles.toMutableList()
-        if (current.isNotEmpty()) {
-          val lastIdx = current.lastIndex
-          val last = current[lastIdx]
-          if (last.openTime == update.candle.openTime) {
-            current[lastIdx] = update.candle
-          } else if (update.candle.openTime > last.openTime) {
-            current.add(update.candle)
-            while (current.size > 150) {
-              current.removeAt(0)
-            }
+        val incoming = update.candle
+        val currentLive = liveCandle
+        if (currentLive == null) {
+          liveCandle = incoming
+        } else if (incoming.openTime == currentLive.openTime) {
+          // Тот же openTime — просто обновляем отдельный лёгкий объект текущей свечи (без пересоздания списка)
+          liveCandle = incoming
+        } else if (incoming.openTime > currentLive.openTime) {
+          // Свеча закрылась: добавляем предыдущую liveCandle в closedCandles (с лимитом 150)
+          val next = closedCandles.toMutableList()
+          next.add(currentLive)
+          while (next.size >= 150) {
+            next.removeAt(0)
           }
-          candles = current
-        } else {
-          candles = listOf(update.candle)
+          closedCandles = next
+          liveCandle = incoming
         }
       }
     }
@@ -283,7 +293,7 @@ fun ChartScreen(
 
           HudCard(
             title = "ИНСТРУМЕНТ // РЫНОЧНЫЙ ТИКЕР",
-            icon = Icons.AutoMirrored.Outlined.ShowChart,
+            icon = Icons.Outlined.ShowChart,
             modifier = Modifier.fillMaxWidth()
           ) {
             Row(
@@ -521,7 +531,14 @@ fun ChartScreen(
                         chartError = null
                         try {
                           val freshList = marketService.fetchCandles(selectedSymbol, selectedInterval, 150)
-                          candles = freshList.takeLast(150)
+                          if (freshList.isNotEmpty()) {
+                            val limited = freshList.takeLast(150)
+                            closedCandles = limited.dropLast(1)
+                            liveCandle = limited.lastOrNull()
+                          } else {
+                            closedCandles = emptyList()
+                            liveCandle = null
+                          }
                           isLoadingCandles = false
                         } catch (e: Exception) {
                           chartError = e.message
@@ -536,7 +553,7 @@ fun ChartScreen(
                 }
               }
 
-              candles.isEmpty() -> {
+              closedCandles.isEmpty() && liveCandle == null -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                   Text("НЕТ ДАННЫХ ПО СВЕЧАМ", color = HudTextMuted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                 }
@@ -544,7 +561,8 @@ fun ChartScreen(
 
               else -> {
                 CandlestickChart(
-                  candles = candles,
+                  closedCandles = closedCandles,
+                  liveCandle = liveCandle,
                   currentPrice = currentPrice,
                   symbol = selectedSymbol,
                   interval = selectedInterval,
@@ -823,7 +841,7 @@ fun ChartToolbar(
         contentAlignment = Alignment.Center
       ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = null, tint = if (!isCandles) Color.White else HudTextMuted, modifier = Modifier.size(13.dp))
+          Icon(Icons.Outlined.ShowChart, contentDescription = null, tint = if (!isCandles) Color.White else HudTextMuted, modifier = Modifier.size(13.dp))
           Spacer(Modifier.width(4.dp))
           Text("ЛИНИЯ", color = if (!isCandles) Color.White else HudTextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
         }
@@ -935,6 +953,42 @@ private fun findCandleIndexByTime(candleList: List<Candle>, time: Long): Int {
   return bestIdx
 }
 
+@Composable
+fun CandlestickChart(
+  candles: List<Candle>,
+  currentPrice: Double,
+  symbol: String,
+  interval: String,
+  chartVisualType: ChartVisualType = ChartVisualType.CANDLES,
+  zoomFactor: Float = 1.0f,
+  onZoomChange: (Float) -> Unit = {},
+  scrollOffset: Float = 0f,
+  onScrollOffsetChange: (Float) -> Unit = {},
+  gridState: GridBotState? = null,
+  backtestResult: BacktestResult? = null,
+  onDragUpperBound: ((Double) -> Unit)? = null,
+  onDragLowerBound: ((Double) -> Unit)? = null,
+  modifier: Modifier = Modifier
+) {
+  CandlestickChart(
+    closedCandles = candles,
+    liveCandle = null,
+    currentPrice = currentPrice,
+    symbol = symbol,
+    interval = interval,
+    chartVisualType = chartVisualType,
+    zoomFactor = zoomFactor,
+    onZoomChange = onZoomChange,
+    scrollOffset = scrollOffset,
+    onScrollOffsetChange = onScrollOffsetChange,
+    gridState = gridState,
+    backtestResult = backtestResult,
+    onDragUpperBound = onDragUpperBound,
+    onDragLowerBound = onDragLowerBound,
+    modifier = modifier
+  )
+}
+
 /**
  * Отрисовка свечей или линии на Canvas:
  * - Поддержка pinch-to-zoom (двумя пальцами)
@@ -946,7 +1000,8 @@ private fun findCandleIndexByTime(candleList: List<Candle>, time: Long): Int {
  */
 @Composable
 fun CandlestickChart(
-  candles: List<Candle>,
+  closedCandles: List<Candle>,
+  liveCandle: Candle? = null,
   currentPrice: Double,
   symbol: String,
   interval: String,
@@ -1031,7 +1086,7 @@ fun CandlestickChart(
 
   Column(modifier = modifier.fillMaxSize()) {
     // Верхняя строка O/H/L/C для выбранной свечи или последней
-    val displayCandle = touchedCandle ?: candles.lastOrNull()
+    val displayCandle = touchedCandle ?: liveCandle ?: closedCandles.lastOrNull()
     if (displayCandle != null) {
       Row(
         modifier = Modifier
@@ -1136,26 +1191,37 @@ fun CandlestickChart(
         val chartWidth = (totalWidth - priceScaleWidthPx).coerceAtLeast(10f)
         val chartHeight = (totalHeight - timeScaleHeightPx).coerceAtLeast(10f)
 
-        if (candles.isEmpty()) return@Canvas
+        val totalCandleCount = closedCandles.size + (if (liveCandle != null) 1 else 0)
+        if (totalCandleCount == 0) return@Canvas
 
         // Ограничение диапазона скролла
-        val contentWidth = candles.size * slotWidthPx
+        val contentWidth = totalCandleCount * slotWidthPx
         val minScroll = if (contentWidth > chartWidth) -(contentWidth - chartWidth) else 0f
         val maxScroll = 0f
         val clampedScrollOffset = scrollOffset.coerceIn(minScroll, maxScroll)
 
         // 1. Определение видимых свечей и их экстремумов (АВТОМАСШТАБ)
         val visibleCandles = mutableListOf<Pair<Int, Candle>>()
-        for (i in candles.indices) {
-          val candleCenterX = chartWidth - (candles.size - 1 - i) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+        for (i in closedCandles.indices) {
+          val candleCenterX = chartWidth - (totalCandleCount - 1 - i) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
           if (candleCenterX + slotWidthPx >= 0 && candleCenterX - slotWidthPx <= chartWidth) {
-            visibleCandles.add(i to candles[i])
+            visibleCandles.add(i to closedCandles[i])
           }
         }
 
-        val pool = if (visibleCandles.isNotEmpty()) visibleCandles.map { it.second } else candles
-        val visibleMin = pool.minOfOrNull { it.low } ?: 0.0
-        val visibleMax = pool.maxOfOrNull { it.high } ?: 1.0
+        val liveIdx = totalCandleCount - 1
+        val liveCandleCenterX = if (liveCandle != null) {
+          chartWidth - (totalCandleCount - 1 - liveIdx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+        } else null
+        val isLiveVisible = liveCandle != null && liveCandleCenterX != null &&
+          (liveCandleCenterX + slotWidthPx >= 0 && liveCandleCenterX - slotWidthPx <= chartWidth)
+
+        var visibleMin = visibleCandles.minOfOrNull { it.second.low } ?: (liveCandle?.low ?: (closedCandles.minOfOrNull { it.low } ?: 0.0))
+        var visibleMax = visibleCandles.maxOfOrNull { it.second.high } ?: (liveCandle?.high ?: (closedCandles.maxOfOrNull { it.high } ?: 1.0))
+        if (isLiveVisible && liveCandle != null) {
+          visibleMin = min(visibleMin, liveCandle.low)
+          visibleMax = max(visibleMax, liveCandle.high)
+        }
 
         val rawRange = visibleMax - visibleMin
         val range = if (rawRange <= 0.0) visibleMin * 0.01 else rawRange
@@ -1213,10 +1279,52 @@ fun CandlestickChart(
           strokeWidth = 1.dp.toPx()
         )
 
-        // 3. ОТРИСОВКА СВЕЧЕЙ ИЛИ ЛИНИИ (Requirement 6)
         var lastDrawnTimeX = -100f
         val minTimeLabelGap = 55.dp.toPx()
 
+        // Вспомогательная функция для отрисовки свечи
+        fun drawSingleCandle(candle: Candle, candleCenterX: Float) {
+          val isBull = candle.close >= candle.open
+          val candleColor = if (isBull) HudGreen else HudRed
+
+          val highY = priceToY(candle.high)
+          val lowY = priceToY(candle.low)
+          val openY = priceToY(candle.open)
+          val closeY = priceToY(candle.close)
+
+          // Фитиль (тень)
+          drawLine(
+            color = candleColor,
+            start = Offset(candleCenterX, highY),
+            end = Offset(candleCenterX, lowY),
+            strokeWidth = 1.2.dp.toPx()
+          )
+
+          // Тело свечи
+          val bodyTop = min(openY, closeY)
+          val bodyHeight = max(abs(openY - closeY), 2.dp.toPx())
+          drawRect(
+            color = candleColor,
+            topLeft = Offset(candleCenterX - (candleWidthPx / 2), bodyTop),
+            size = Size(candleWidthPx, bodyHeight)
+          )
+
+          // Временная метка по нижнему краю
+          if (candleCenterX - lastDrawnTimeX >= minTimeLabelGap && candleCenterX in 20f..(chartWidth - 20f)) {
+            val tText = timeFormat.format(Date(candle.openTime))
+            drawIntoCanvas { canvas ->
+              canvas.nativeCanvas.drawText(
+                tText,
+                candleCenterX,
+                chartHeight + 16.dp.toPx(),
+                timePaint
+              )
+            }
+            lastDrawnTimeX = candleCenterX
+          }
+        }
+
+        // 3. ОТРИСОВКА СВЕЧЕЙ ИЛИ ЛИНИИ (Requirement 6)
         if (chartVisualType == ChartVisualType.LINE) {
           // Отрисовка линейного графика с градиентной заливкой
           val linePath = Path()
@@ -1226,7 +1334,7 @@ fun CandlestickChart(
 
           for (k in visibleCandles.indices) {
             val (idx, candle) = visibleCandles[k]
-            val candleCenterX = chartWidth - (candles.size - 1 - idx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+            val candleCenterX = chartWidth - (totalCandleCount - 1 - idx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
             val closeY = priceToY(candle.close)
             val pt = Offset(candleCenterX, closeY)
 
@@ -1245,6 +1353,26 @@ fun CandlestickChart(
                 canvas.nativeCanvas.drawText(tText, candleCenterX, chartHeight + 16.dp.toPx(), timePaint)
               }
               lastDrawnTimeX = candleCenterX
+            }
+          }
+
+          if (isLiveVisible && liveCandle != null && liveCandleCenterX != null) {
+            val closeY = priceToY(liveCandle.close)
+            val pt = Offset(liveCandleCenterX, closeY)
+            if (firstPt == null) {
+              linePath.moveTo(pt.x, pt.y)
+              firstPt = pt
+            } else {
+              linePath.lineTo(pt.x, pt.y)
+            }
+            lastPt = pt
+
+            if (liveCandleCenterX - lastDrawnTimeX >= minTimeLabelGap && liveCandleCenterX in 20f..(chartWidth - 20f)) {
+              val tText = timeFormat.format(Date(liveCandle.openTime))
+              drawIntoCanvas { canvas ->
+                canvas.nativeCanvas.drawText(tText, liveCandleCenterX, chartHeight + 16.dp.toPx(), timePaint)
+              }
+              lastDrawnTimeX = liveCandleCenterX
             }
           }
 
@@ -1271,47 +1399,15 @@ fun CandlestickChart(
           }
         } else {
           // Отрисовка японских свечей (Candlesticks)
+          // Отрисовка закрытых свечей
           for ((idx, candle) in visibleCandles) {
-            val candleCenterX = chartWidth - (candles.size - 1 - idx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+            val candleCenterX = chartWidth - (totalCandleCount - 1 - idx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+            drawSingleCandle(candle, candleCenterX)
+          }
 
-            val isBull = candle.close >= candle.open
-            val candleColor = if (isBull) HudGreen else HudRed
-
-            val highY = priceToY(candle.high)
-            val lowY = priceToY(candle.low)
-            val openY = priceToY(candle.open)
-            val closeY = priceToY(candle.close)
-
-            // Фитиль (тень)
-            drawLine(
-              color = candleColor,
-              start = Offset(candleCenterX, highY),
-              end = Offset(candleCenterX, lowY),
-              strokeWidth = 1.2.dp.toPx()
-            )
-
-            // Тело свечи
-            val bodyTop = min(openY, closeY)
-            val bodyHeight = max(abs(openY - closeY), 2.dp.toPx())
-            drawRect(
-              color = candleColor,
-              topLeft = Offset(candleCenterX - (candleWidthPx / 2), bodyTop),
-              size = Size(candleWidthPx, bodyHeight)
-            )
-
-            // Временная метка по нижнему краю
-            if (candleCenterX - lastDrawnTimeX >= minTimeLabelGap && candleCenterX in 20f..(chartWidth - 20f)) {
-              val tText = timeFormat.format(Date(candle.openTime))
-              drawIntoCanvas { canvas ->
-                canvas.nativeCanvas.drawText(
-                  tText,
-                  candleCenterX,
-                  chartHeight + 16.dp.toPx(),
-                  timePaint
-                )
-              }
-              lastDrawnTimeX = candleCenterX
-            }
+          // Отрисовка текущей формирующейся liveCandle поверх (без пересоздания списка)
+          if (isLiveVisible && liveCandle != null && liveCandleCenterX != null) {
+            drawSingleCandle(liveCandle, liveCandleCenterX)
           }
         }
 
@@ -1373,9 +1469,11 @@ fun CandlestickChart(
 
             val relX = pt.x - clampedScrollOffset
             val idxFromRight = ((chartWidth - relX) / slotWidthPx).toInt()
-            val targetIdx = candles.size - 1 - idxFromRight
-            if (targetIdx in candles.indices) {
-              touchedCandle = candles[targetIdx]
+            val targetIdx = totalCandleCount - 1 - idxFromRight
+            if (targetIdx in closedCandles.indices) {
+              touchedCandle = closedCandles[targetIdx]
+            } else if (targetIdx == totalCandleCount - 1 && liveCandle != null) {
+              touchedCandle = liveCandle
             }
           }
         }
@@ -1424,8 +1522,8 @@ fun CandlestickChart(
 
           // Отрисовка исполненных уровней сетки (Grid Fill Markers)
           for (fill in backtestResult.gridFillMarkers) {
-            val fillIdx = findCandleIndexByTime(candles, fill.time)
-            val fillX = chartWidth - (candles.size - 1 - fillIdx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+            val fillIdx = findCandleIndexByTime(closedCandles, fill.time)
+            val fillX = chartWidth - (totalCandleCount - 1 - fillIdx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
             val fillY = priceToY(fill.price)
 
             if (fillX in -15f..(chartWidth + 15f)) {
@@ -1461,11 +1559,11 @@ fun CandlestickChart(
 
           // Отрисовка сделок сигнального бота (Signal Bot Trades: Entry/Exit + Connector + % PnL)
           for (marker in backtestResult.tradeMarkers) {
-            val entryIdx = findCandleIndexByTime(candles, marker.entryTime)
-            val exitIdx = findCandleIndexByTime(candles, marker.exitTime)
+            val entryIdx = findCandleIndexByTime(closedCandles, marker.entryTime)
+            val exitIdx = findCandleIndexByTime(closedCandles, marker.exitTime)
 
-            val entryX = chartWidth - (candles.size - 1 - entryIdx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
-            val exitX = chartWidth - (candles.size - 1 - exitIdx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+            val entryX = chartWidth - (totalCandleCount - 1 - entryIdx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
+            val exitX = chartWidth - (totalCandleCount - 1 - exitIdx) * slotWidthPx + clampedScrollOffset - (slotWidthPx / 2)
             val entryY = priceToY(marker.entryPrice)
             val exitY = priceToY(marker.exitPrice)
 
